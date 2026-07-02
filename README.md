@@ -16,6 +16,14 @@ The building code.
 `include_hip` directory is `include` being hipified by `hipify-perl` and some other adjustment
 
 * Difference
+    * math.cuh
+        ``` C++
+        // include
+        asm volatile("shfl.sync.bfly.b32 %0, %1, %2, 0x1f, 0xffffffff;" : "=f"(y) : "f"(x), "r"(delta));
+        // include_hip
+        __shfl_xor_sync(0xffffffffffffffffULL, x, delta);
+        ```
+        Shuffle operations work differently between CUDA and HIP. I currently modify it to make it work.
 
 # flashinfer
 `flashinfer.cu` is the original code.
