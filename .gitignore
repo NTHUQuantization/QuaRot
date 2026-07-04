@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Local secrets / caches
+.hf_env
+
+# Generated smoke/workload scratch outputs
+*smoke*/
+*workload*/
+
+# Large rocprof raw traces; keep summaries/stats instead.
+*_kernel_trace.csv

@@ -1,0 +1,43 @@
+# Llama-3.1 8B Generation Samples
+
+## Prompt 0 (quarot_unfused)
+
+Prompt:
+
+The future of efficient large language model inference depends on
+
+Output:
+
+The future of efficient large language model inference depends on the…………………
+
+## Prompt 1 (quarot_unfused)
+
+Prompt:
+
+In a short paragraph, explain why kernel fusion matters for GPU inference.
+
+Output:
+
+In a short paragraph, explain why kernel fusion matters for GPU inference. What…
+…
+…
+…
+…
+…
+…
+
+## Prompt 2 (quarot_unfused)
+
+Prompt:
+
+List three practical constraints when deploying quantized transformer models.
+
+Output:
+
+List three practical constraints when deploying quantized transformer models. […
+…
+ one…
+…
+ one…
+
+

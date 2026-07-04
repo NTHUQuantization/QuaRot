@@ -1,0 +1,12 @@
+{
+  "model_id": "meta-llama/Llama-3.1-8B",
+  "compatible": false,
+  "reason": "Llama-3.1 8B uses GQA (q_heads=32, kv_heads=8). Current K1/K2 HIP prototypes assume q_heads == kv_heads in paged KV decode.",
+  "hidden_size": 4096,
+  "intermediate_size": 14336,
+  "num_hidden_layers": 32,
+  "num_attention_heads": 32,
+  "num_key_value_heads": 8,
+  "head_dim": 128,
+  "vocab_size": 128256
+}

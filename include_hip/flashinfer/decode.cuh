@@ -690,6 +690,211 @@ __global__ void BatchDecodeWithPagedKVCacheKernel(
   s.o.cast_store(o + (batch_idx * num_heads + head_idx) * head_dim + tx * vec_size);
 }
 
+template<
+  RotaryMode rotary_mode,
+  bool norm_on_the_fly,
+  size_t vec_size,
+  size_t bdx,
+  size_t bdy,
+  size_t FoldFactor,
+  typename DTypeInQ,
+  typename DTypeIn,
+  typename DTypeOut,
+  typename IdType
+>
+__global__ void BatchDecodeWithPagedKVGQAKernel(
+  DTypeInQ *__restrict__ q,
+  paged_kv_t<DTypeIn, IdType> paged_kv,
+  DTypeOut *__restrict__ o,
+  size_t num_q_heads,
+  float sm_scale,
+  float rope_inv_scale,
+  float rope_inv_theta
+) {
+  auto block = cg::this_thread_block();
+  sm_scale *= math::log2e;
+
+  constexpr size_t num_stages_smem = 4;
+  constexpr size_t head_dim = bdx * vec_size;
+  size_t batch_idx = blockIdx.x;
+  size_t q_head_idx = blockIdx.y;
+  size_t num_kv_heads = paged_kv.num_heads;
+  size_t group_size = num_q_heads / num_kv_heads;
+  size_t kv_head_idx = q_head_idx / group_size;
+
+  if (q_head_idx >= num_q_heads || kv_head_idx >= num_kv_heads || num_q_heads % num_kv_heads != 0) {
+    return;
+  }
+
+  size_t cur_page_indptr_begin = paged_kv.indptr[batch_idx], cur_page_indptr_end = paged_kv.indptr[batch_idx + 1];
+  size_t cur_last_page_offset = paged_kv.last_page_offset[batch_idx];
+  size_t seq_len = (cur_page_indptr_end - cur_page_indptr_begin - 1) * paged_kv.page_size + cur_last_page_offset;
+
+  static_assert(bdx * bdy == 128);
+  static_assert(num_stages_smem >= sizeof(float) / quant::size_of_type<DTypeIn>() / 2);
+  __shared__ uint8_t smem[
+    static_cast<size_t>(2 * num_stages_smem * bdy * head_dim * quant::size_of_type<DTypeIn>())
+  ];
+  DTypeIn *k_smem = reinterpret_cast<DTypeIn*>(smem);
+  DTypeIn *v_smem = quant::get_ptr(k_smem, num_stages_smem * bdy * head_dim);
+
+  __shared__ float smem_md[2 * bdy];
+
+  size_t tx = threadIdx.x, ty = threadIdx.y;
+  size_t tx_mem = tx % (bdx / FoldFactor), ty_mem = ty * FoldFactor + tx / (bdx / FoldFactor);
+
+  vec_t<float, vec_size> q_vec;
+  vec_t<float, vec_size> freq;
+  if constexpr (rotary_mode == RotaryMode::kLlama) {
+#pragma unroll
+    for (size_t i = 0; i < vec_size; ++i) {
+      freq[i] = rope_inv_scale *
+                __powf(rope_inv_theta,
+                       float(2 * ((tx * vec_size + i) % (head_dim / 2))) / float(head_dim));
+    }
+    q_vec = apply_llama_rope<vec_size, bdx>(
+      quant::get_ptr(q, (batch_idx * num_q_heads + q_head_idx) * head_dim),
+      freq,
+      seq_len - 1
+    );
+  } else {
+    q_vec.cast_load(
+      quant::get_ptr(q, (batch_idx * num_q_heads + q_head_idx) * head_dim + tx * vec_size)
+    );
+  }
+  block.sync();
+
+  size_t producer_entry_base = 0, stage_idx = 0;
+  constexpr size_t vec_bits = quant::size_of_type<DTypeIn>() * vec_size * 8 * FoldFactor;
+  static_assert(vec_bits == 128, "We want to highly utilize the memory bandwidth");
+
+  size_t producer_page_iter = cur_page_indptr_begin;
+  size_t producer_page_idx = paged_kv.indices[producer_page_iter];
+  size_t producer_valid_page_size = paged_kv.get_valid_page_size(batch_idx, producer_page_iter);
+  size_t kv_idx_base[num_stages_smem]{0};
+  size_t valid_page_size[num_stages_smem]{0};
+#pragma unroll
+  for (size_t iter = 0; iter < num_stages_smem; ++iter) {
+    AdvancePageIterator(
+      paged_kv,
+      kv_idx_base,
+      valid_page_size,
+      producer_valid_page_size,
+      producer_entry_base,
+      producer_page_iter,
+      producer_page_idx,
+      cur_page_indptr_begin,
+      cur_page_indptr_end,
+      batch_idx,
+      stage_idx
+    );
+    bool producer_pred_guard = (producer_entry_base + ty_mem < producer_valid_page_size) &&
+                               (producer_page_iter < cur_page_indptr_end) &&
+                               (ty_mem < bdy);
+    cp_async::pred_load<vec_bits, true>(
+      quant::get_ptr(k_smem, (stage_idx * bdy + ty_mem) * head_dim + tx_mem * vec_size * FoldFactor),
+      quant::get_ptr(paged_kv.data, paged_kv.get_k_elem_offset(producer_page_idx, kv_head_idx, producer_entry_base + ty_mem, tx_mem * vec_size * FoldFactor)),
+      producer_pred_guard
+    );
+    cp_async::commit_group();
+    cp_async::pred_load<vec_bits, true>(
+      quant::get_ptr(v_smem, (stage_idx * bdy + ty_mem) * head_dim + tx_mem * vec_size * FoldFactor),
+      quant::get_ptr(paged_kv.data, paged_kv.get_v_elem_offset(producer_page_idx, kv_head_idx, producer_entry_base + ty_mem, tx_mem * vec_size * FoldFactor)),
+      producer_pred_guard
+    );
+    cp_async::commit_group();
+    stage_idx = (stage_idx + 1) % num_stages_smem;
+    producer_entry_base += bdy;
+  }
+
+  state_t<vec_size, norm_on_the_fly> s;
+  float x = 0.f;
+  size_t consumer_kv_idx_base = 0;
+
+  for (size_t consumer_page_iter = cur_page_indptr_begin; consumer_page_iter < cur_page_indptr_end;
+       ++consumer_page_iter) {
+    size_t consumer_valid_page_size = valid_page_size[stage_idx];
+    size_t consumer_kv_page_idx = paged_kv.indices[consumer_page_iter];
+
+#pragma unroll 4
+    for (size_t iter = 0; iter < (consumer_valid_page_size + bdy - 1) / bdy; ++iter) {
+      consumer_kv_idx_base = kv_idx_base[stage_idx];
+      size_t consumer_kv_entry = iter * bdy + ty;
+
+      bool consumer_pred_guard = (consumer_kv_entry < consumer_valid_page_size);
+      AdvancePageIterator(
+        paged_kv,
+        kv_idx_base,
+        valid_page_size,
+        producer_valid_page_size,
+        producer_entry_base,
+        producer_page_iter,
+        producer_page_idx,
+        cur_page_indptr_begin,
+        cur_page_indptr_end,
+        batch_idx,
+        stage_idx
+      );
+      bool producer_pred_guard = (producer_entry_base + ty_mem < producer_valid_page_size) &&
+                                 (producer_page_iter < cur_page_indptr_end) &&
+                                 (ty_mem < bdy);
+      float2 paramK, paramV;
+      if(consumer_pred_guard){
+        paramK = __half22float2(
+          quant::get_ptr(paged_kv.param, paged_kv.get_param_k_elem_offset(consumer_kv_page_idx, kv_head_idx, consumer_kv_entry))[0]
+        );
+        paramV = __half22float2(
+          quant::get_ptr(paged_kv.param, paged_kv.get_param_v_elem_offset(consumer_kv_page_idx, kv_head_idx, consumer_kv_entry))[0]
+        );
+      }
+
+      cp_async::wait_group<2 * num_stages_smem - 1>();
+      block.sync();
+      compute_qk<rotary_mode, vec_size, bdx>(
+        quant::get_ptr(k_smem, (stage_idx * bdy + ty) * head_dim),
+        q_vec, freq,
+        consumer_kv_idx_base, stage_idx, num_q_heads,
+        sm_scale, x,
+        paramK.x, paramK.y
+      );
+      block.sync();
+
+      cp_async::pred_load<vec_bits, true>(
+        quant::get_ptr(k_smem, (stage_idx * bdy + ty_mem) * head_dim + tx_mem * vec_size * FoldFactor),
+        quant::get_ptr(paged_kv.data, paged_kv.get_k_elem_offset(producer_page_idx, kv_head_idx, producer_entry_base + ty_mem, tx_mem * vec_size * FoldFactor)),
+        producer_pred_guard
+      );
+      cp_async::commit_group();
+
+      cp_async::wait_group<2 * num_stages_smem - 1>();
+      block.sync();
+      update_partial_state<vec_size, bdx>(
+        quant::get_ptr(v_smem, (stage_idx * bdy + ty) * head_dim),
+        x, stage_idx, consumer_pred_guard, s,
+        paramV.x, paramV.y
+      );
+      block.sync();
+
+      cp_async::pred_load<vec_bits, true>(
+        quant::get_ptr(v_smem, (stage_idx * bdy + ty_mem) * head_dim + tx_mem * vec_size * FoldFactor),
+        quant::get_ptr(paged_kv.data, paged_kv.get_v_elem_offset(producer_page_idx, kv_head_idx, producer_entry_base + ty_mem, tx_mem * vec_size * FoldFactor)),
+        producer_pred_guard
+      );
+      cp_async::commit_group();
+
+      stage_idx = (stage_idx + 1) % num_stages_smem;
+      producer_entry_base += bdy;
+    }
+  }
+  cp_async::wait_group<0>();
+  block.sync();
+
+  sync_state<vec_size, bdx, bdy>(s, reinterpret_cast<float *>(smem), smem_md);
+  s.normalize();
+
+  s.o.cast_store(o + (batch_idx * num_q_heads + q_head_idx) * head_dim + tx * vec_size);
+}
+
 /*!
  * \brief FlashAttention decoding with kv-cache for a single sequence
  * \tparam DTypeIn A template type indicates the input data type

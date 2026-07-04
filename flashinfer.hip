@@ -51,6 +51,48 @@ void FlashInferBatchDecodeKernel_i4(__half* o, __half* q, void* kv_data,
 }
 
 template <int head_dim>
+void FlashInferBatchDecodeKernel_i4_gqa(__half* o, __half* q, void* kv_data,
+                                        __half2* kv_param, int32_t* kv_indptr,
+                                        int32_t* kv_indicies,
+                                        int32_t* last_page_offset, int num_layers,
+                                        int layer_idx, int num_q_heads,
+                                        int num_kv_heads, int page_size,
+                                        int batch_size) {
+  using DTypeIn = flashinfer::quant::__precision__s4;
+  using DTypeInQ = __half;
+  using DTypeOut = __half;
+
+  flashinfer::paged_kv_t<DTypeIn, int32_t> paged_kv(
+      num_layers, layer_idx, num_kv_heads, page_size, head_dim, batch_size,
+      (DTypeIn*)kv_data, kv_param, kv_indptr, kv_indicies, last_page_offset);
+
+  const float rope_scale = 1.f;
+  const float rope_theta = 1e4;
+  const float sm_scale = 1.f / std::sqrt(float(head_dim));
+  const float rope_inv_scale = 1.f / rope_scale;
+  const float rope_inv_theta = 1.f / rope_theta;
+
+  constexpr bool norm_on_the_fly = false;
+  constexpr auto rotary_mode = flashinfer::RotaryMode::kNone;
+  constexpr size_t FoldFactor = 2;
+  constexpr size_t vec_size =
+    ( (16 / flashinfer::quant::size_of_type<DTypeIn>() / FoldFactor)
+        > (head_dim / 32)
+    )
+    ? (16 / flashinfer::quant::size_of_type<DTypeIn>() / FoldFactor)
+    : (head_dim / 32);
+  constexpr size_t bdx = head_dim / vec_size;
+  constexpr size_t bdy = 128 / bdx;
+  dim3 nblks(batch_size, num_q_heads);
+  dim3 nthrs(bdx, bdy);
+
+ hipLaunchKernelGGL(( flashinfer::BatchDecodeWithPagedKVGQAKernel<
+      rotary_mode, norm_on_the_fly, vec_size, bdx, bdy, FoldFactor, DTypeInQ,
+      DTypeIn, DTypeOut, int32_t>), dim3(nblks), dim3(nthrs), 0, 0,
+      q, paged_kv, o, static_cast<size_t>(num_q_heads), sm_scale, rope_inv_scale, rope_inv_theta);
+}
+
+template <int head_dim>
 void FlashInferInitKvKernel_i4(void* kv_data, __half2* kv_param,
                                int32_t* kv_indptr, int32_t* kv_indicies,
                                int32_t* last_page_offset, void* key,
@@ -151,6 +193,48 @@ void FlashInferBatchDecodeKernel_f16(__half* o, __half* q, void* kv_data,
 }
 
 template <int head_dim>
+void FlashInferBatchDecodeKernel_f16_gqa(__half* o, __half* q, void* kv_data,
+                                        __half2* kv_param, int32_t* kv_indptr,
+                                        int32_t* kv_indicies,
+                                        int32_t* last_page_offset, int num_layers,
+                                        int layer_idx, int num_q_heads,
+                                        int num_kv_heads, int page_size,
+                                        int batch_size) {
+  using DTypeIn = __half;
+  using DTypeInQ = __half;
+  using DTypeOut = __half;
+
+  flashinfer::paged_kv_t<DTypeIn, int32_t> paged_kv(
+      num_layers, layer_idx, num_kv_heads, page_size, head_dim, batch_size,
+      (DTypeIn*)kv_data, kv_param, kv_indptr, kv_indicies, last_page_offset);
+
+  const float rope_scale = 1.f;
+  const float rope_theta = 1e4;
+  const float sm_scale = 1.f / std::sqrt(float(head_dim));
+  const float rope_inv_scale = 1.f / rope_scale;
+  const float rope_inv_theta = 1.f / rope_theta;
+
+  constexpr bool norm_on_the_fly = false;
+  constexpr auto rotary_mode = flashinfer::RotaryMode::kNone;
+  constexpr size_t FoldFactor = 1;
+  constexpr size_t vec_size =
+    ( (16 / flashinfer::quant::size_of_type<DTypeIn>() / FoldFactor)
+        > (head_dim / 32)
+    )
+    ? (16 / flashinfer::quant::size_of_type<DTypeIn>() / FoldFactor)
+    : (head_dim / 32);
+  constexpr size_t bdx = head_dim / vec_size;
+  constexpr size_t bdy = 128 / bdx;
+  dim3 nblks(batch_size, num_q_heads);
+  dim3 nthrs(bdx, bdy);
+
+ hipLaunchKernelGGL(( flashinfer::BatchDecodeWithPagedKVGQAKernel<
+      rotary_mode, norm_on_the_fly, vec_size, bdx, bdy, FoldFactor, DTypeInQ,
+      DTypeIn, DTypeOut, int32_t>), dim3(nblks), dim3(nthrs), 0, 0,
+      q, paged_kv, o, static_cast<size_t>(num_q_heads), sm_scale, rope_inv_scale, rope_inv_theta);
+}
+
+template <int head_dim>
 void FlashInferInitKvKernel_f16(void* kv_data, __half2* kv_param,
                                int32_t* kv_indptr, int32_t* kv_indicies,
                                int32_t* last_page_offset, void* key,
@@ -215,6 +299,12 @@ template void FlashInferBatchDecodeKernel_i4<128>(
     int num_layers, int layer_idx, int num_heads, int page_size,
     int batch_size);
 
+template void FlashInferBatchDecodeKernel_i4_gqa<128>(
+    __half* o, __half* q, void* kv_data, __half2* kv_param,
+    int32_t* kv_indptr, int32_t* kv_indicies, int32_t* last_page_offset,
+    int num_layers, int layer_idx, int num_q_heads, int num_kv_heads,
+    int page_size, int batch_size);
+
 template void FlashInferInitKvKernel_i4<128>(
     void* kv_data, __half2* kv_param, int32_t* kv_indptr, int32_t* kv_indicies,
     int32_t* last_page_offset, void* key, void* value, __half2* key_param,
@@ -233,6 +323,12 @@ template void FlashInferBatchDecodeKernel_f16<128>(
     int32_t* kv_indptr, int32_t* kv_indicies, int32_t* last_page_offset,
     int num_layers, int layer_idx, int num_heads, int page_size,
     int batch_size);
+
+template void FlashInferBatchDecodeKernel_f16_gqa<128>(
+    __half* o, __half* q, void* kv_data, __half2* kv_param,
+    int32_t* kv_indptr, int32_t* kv_indicies, int32_t* last_page_offset,
+    int num_layers, int layer_idx, int num_q_heads, int num_kv_heads,
+    int page_size, int batch_size);
 
 template void FlashInferInitKvKernel_f16<128>(
     void* kv_data, __half2* kv_param, int32_t* kv_indptr, int32_t* kv_indicies,
@@ -277,6 +373,18 @@ void batch_decode_f16(
       num_layers, layer_idx, num_heads, page_size, batch_size);
 }
 
+void batch_decode_f16_gqa(
+    torch::Tensor o, torch::Tensor q, torch::Tensor kv_data,
+    torch::Tensor kv_param, torch::Tensor kv_indptr, torch::Tensor kv_indices,
+    torch::Tensor last_page_offset, int num_layers, int layer_idx,
+    int num_q_heads, int num_kv_heads, int page_size, int batch_size) {
+  TORCH_CHECK(num_q_heads % num_kv_heads == 0, "num_q_heads must be divisible by num_kv_heads");
+  FlashInferBatchDecodeKernel_f16_gqa<128>(
+      half_ptr(o), half_ptr(q), kv_data.data_ptr(), half2_ptr(kv_param),
+      int32_ptr(kv_indptr), int32_ptr(kv_indices), int32_ptr(last_page_offset),
+      num_layers, layer_idx, num_q_heads, num_kv_heads, page_size, batch_size);
+}
+
 void init_kv_f16(
     torch::Tensor kv_data, torch::Tensor kv_param, torch::Tensor kv_indptr,
     torch::Tensor kv_indices, torch::Tensor last_page_offset, torch::Tensor key,
@@ -317,6 +425,20 @@ void batch_decode_i4(
       num_layers, layer_idx, num_heads, page_size, batch_size);
 }
 
+void batch_decode_i4_gqa(
+    torch::Tensor o, torch::Tensor q, torch::Tensor kv_data,
+    torch::Tensor kv_param, torch::Tensor kv_indptr, torch::Tensor kv_indices,
+    torch::Tensor last_page_offset, int num_layers, int layer_idx,
+    int num_q_heads, int num_kv_heads, int page_size, int batch_size) {
+  TORCH_CHECK(kv_data.is_cuda(), "kv_data must be on CUDA/HIP device");
+  TORCH_CHECK(kv_data.scalar_type() == torch::kUInt8, "i4 kv_data must be uint8 packed storage");
+  TORCH_CHECK(num_q_heads % num_kv_heads == 0, "num_q_heads must be divisible by num_kv_heads");
+  FlashInferBatchDecodeKernel_i4_gqa<128>(
+      half_ptr(o), half_ptr(q), kv_data.data_ptr(), half2_ptr(kv_param),
+      int32_ptr(kv_indptr), int32_ptr(kv_indices), int32_ptr(last_page_offset),
+      num_layers, layer_idx, num_q_heads, num_kv_heads, page_size, batch_size);
+}
+
 void init_kv_i4(
     torch::Tensor kv_data, torch::Tensor kv_param, torch::Tensor kv_indptr,
     torch::Tensor kv_indices, torch::Tensor last_page_offset, torch::Tensor key,
@@ -352,9 +474,11 @@ void append_kv_i4(
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("batch_decode_f16", &batch_decode_f16, "FlashInfer batch decode f16");
+  m.def("batch_decode_f16_gqa", &batch_decode_f16_gqa, "FlashInfer batch decode f16 GQA");
   m.def("init_kv_f16", &init_kv_f16, "FlashInfer init paged KV cache f16");
   m.def("append_kv_f16", &append_kv_f16, "FlashInfer append paged KV cache f16");
   m.def("batch_decode_i4", &batch_decode_i4, "FlashInfer batch decode i4");
+  m.def("batch_decode_i4_gqa", &batch_decode_i4_gqa, "FlashInfer batch decode i4 GQA");
   m.def("init_kv_i4", &init_kv_i4, "FlashInfer init paged KV cache i4");
   m.def("append_kv_i4", &append_kv_i4, "FlashInfer append paged KV cache i4");
 }
