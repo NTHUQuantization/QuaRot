@@ -1,0 +1,22 @@
+"Kind","Agent_Id","Queue_Id","Stream_Id","Thread_Id","Dispatch_Id","Kernel_Id","Kernel_Name","Correlation_Id","Start_Timestamp","End_Timestamp","LDS_Block_Size","Scratch_Size","VGPR_Count","Accum_VGPR_Count","SGPR_Count","Workgroup_Size_X","Workgroup_Size_Y","Workgroup_Size_Z","Grid_Size_X","Grid_Size_Y","Grid_Size_Z"
+"KERNEL_DISPATCH","Agent 1",1,0,325,1,3,"__amd_rocclr_copyBuffer",1,12548031134244868,12548031134250472,0,0,16,0,128,512,1,1,512,1,1
+"KERNEL_DISPATCH","Agent 1",1,0,325,2,16,"(anonymous namespace)::output_had_quant_kernel(__half const*, unsigned char*, __half*, int)",2,12548031136159870,12548031136163868,0,0,16,0,128,256,1,1,256,16,1
+"KERNEL_DISPATCH","Agent 1",1,0,325,3,16,"(anonymous namespace)::output_had_quant_kernel(__half const*, unsigned char*, __half*, int)",3,12548031136438237,12548031136441798,0,0,16,0,128,256,1,1,256,16,1
+"KERNEL_DISPATCH","Agent 1",1,0,325,4,16,"(anonymous namespace)::output_had_quant_kernel(__half const*, unsigned char*, __half*, int)",4,12548031136741344,12548031136744268,0,0,16,0,128,256,1,1,256,16,1
+"KERNEL_DISPATCH","Agent 1",1,0,325,5,16,"(anonymous namespace)::output_had_quant_kernel(__half const*, unsigned char*, __half*, int)",5,12548031136858699,12548031136861703,0,0,16,0,128,256,1,1,256,16,1
+"KERNEL_DISPATCH","Agent 1",1,0,325,6,16,"(anonymous namespace)::output_had_quant_kernel(__half const*, unsigned char*, __half*, int)",6,12548031136972030,12548031136975070,0,0,16,0,128,256,1,1,256,16,1
+"KERNEL_DISPATCH","Agent 1",1,0,325,7,16,"(anonymous namespace)::output_had_quant_kernel(__half const*, unsigned char*, __half*, int)",7,12548031137238397,12548031137241934,0,0,16,0,128,256,1,1,256,16,1
+"KERNEL_DISPATCH","Agent 1",1,0,325,8,16,"(anonymous namespace)::output_had_quant_kernel(__half const*, unsigned char*, __half*, int)",8,12548031137536220,12548031137539120,0,0,16,0,128,256,1,1,256,16,1
+"KERNEL_DISPATCH","Agent 1",1,0,325,9,16,"(anonymous namespace)::output_had_quant_kernel(__half const*, unsigned char*, __half*, int)",9,12548031137764478,12548031137767319,0,0,16,0,128,256,1,1,256,16,1
+"KERNEL_DISPATCH","Agent 1",1,0,325,10,16,"(anonymous namespace)::output_had_quant_kernel(__half const*, unsigned char*, __half*, int)",10,12548031138004892,12548031138008771,0,0,16,0,128,256,1,1,256,16,1
+"KERNEL_DISPATCH","Agent 1",1,0,325,11,16,"(anonymous namespace)::output_had_quant_kernel(__half const*, unsigned char*, __half*, int)",11,12548031138255630,12548031138259169,0,0,16,0,128,256,1,1,256,16,1
+"KERNEL_DISPATCH","Agent 1",1,0,325,12,16,"(anonymous namespace)::output_had_quant_kernel(__half const*, unsigned char*, __half*, int)",12,12548031138487547,12548031138491032,0,0,16,0,128,256,1,1,256,16,1
+"KERNEL_DISPATCH","Agent 1",1,0,325,13,16,"(anonymous namespace)::output_had_quant_kernel(__half const*, unsigned char*, __half*, int)",13,12548031138718240,12548031138721943,0,0,16,0,128,256,1,1,256,16,1
+"KERNEL_DISPATCH","Agent 1",1,0,325,14,16,"(anonymous namespace)::output_had_quant_kernel(__half const*, unsigned char*, __half*, int)",14,12548031138835141,12548031138838692,0,0,16,0,128,256,1,1,256,16,1
+"KERNEL_DISPATCH","Agent 1",1,0,325,15,16,"(anonymous namespace)::output_had_quant_kernel(__half const*, unsigned char*, __half*, int)",15,12548031138945735,12548031138949192,0,0,16,0,128,256,1,1,256,16,1
+"KERNEL_DISPATCH","Agent 1",1,0,325,16,16,"(anonymous namespace)::output_had_quant_kernel(__half const*, unsigned char*, __half*, int)",16,12548031139199118,12548031139202551,0,0,16,0,128,256,1,1,256,16,1
+"KERNEL_DISPATCH","Agent 1",1,0,325,17,16,"(anonymous namespace)::output_had_quant_kernel(__half const*, unsigned char*, __half*, int)",17,12548031139316339,12548031139319892,0,0,16,0,128,256,1,1,256,16,1
+"KERNEL_DISPATCH","Agent 1",1,0,325,18,16,"(anonymous namespace)::output_had_quant_kernel(__half const*, unsigned char*, __half*, int)",18,12548031139438891,12548031139442640,0,0,16,0,128,256,1,1,256,16,1
+"KERNEL_DISPATCH","Agent 1",1,0,325,19,16,"(anonymous namespace)::output_had_quant_kernel(__half const*, unsigned char*, __half*, int)",19,12548031139734125,12548031139737832,0,0,16,0,128,256,1,1,256,16,1
+"KERNEL_DISPATCH","Agent 1",1,0,325,20,16,"(anonymous namespace)::output_had_quant_kernel(__half const*, unsigned char*, __half*, int)",20,12548031139846298,12548031139849427,0,0,16,0,128,256,1,1,256,16,1
+"KERNEL_DISPATCH","Agent 1",1,0,325,21,16,"(anonymous namespace)::output_had_quant_kernel(__half const*, unsigned char*, __half*, int)",21,12548031139958936,12548031139962195,0,0,16,0,128,256,1,1,256,16,1

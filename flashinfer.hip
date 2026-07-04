@@ -3,6 +3,7 @@
 #pragma once
 #include <algorithm>
 #include <cmath>
+#include <torch/extension.h>
 
 #include "flashinfer/decode.cuh"
 #include "flashinfer/page.cuh"
@@ -244,3 +245,116 @@ template void FlashInferAppendKvKernel_f16<128>(
     int32_t* last_page_offset, void* key, void* value, __half2* key_param,
     __half2* value_param, int num_layers, int layer_idx, int num_heads,
     int page_size, int batch_size);
+
+namespace {
+
+__half* half_ptr(torch::Tensor t) {
+  TORCH_CHECK(t.is_cuda(), "tensor must be on CUDA/HIP device");
+  TORCH_CHECK(t.scalar_type() == torch::kFloat16, "tensor must be float16");
+  return reinterpret_cast<__half*>(t.data_ptr<at::Half>());
+}
+
+__half2* half2_ptr(torch::Tensor t) {
+  TORCH_CHECK(t.is_cuda(), "tensor must be on CUDA/HIP device");
+  TORCH_CHECK(t.scalar_type() == torch::kFloat16, "tensor must be float16");
+  return reinterpret_cast<__half2*>(t.data_ptr<at::Half>());
+}
+
+int32_t* int32_ptr(torch::Tensor t) {
+  TORCH_CHECK(t.is_cuda(), "tensor must be on CUDA/HIP device");
+  TORCH_CHECK(t.scalar_type() == torch::kInt32, "tensor must be int32");
+  return t.data_ptr<int32_t>();
+}
+
+void batch_decode_f16(
+    torch::Tensor o, torch::Tensor q, torch::Tensor kv_data,
+    torch::Tensor kv_param, torch::Tensor kv_indptr, torch::Tensor kv_indices,
+    torch::Tensor last_page_offset, int num_layers, int layer_idx,
+    int num_heads, int page_size, int batch_size) {
+  FlashInferBatchDecodeKernel_f16<128>(
+      half_ptr(o), half_ptr(q), kv_data.data_ptr(), half2_ptr(kv_param),
+      int32_ptr(kv_indptr), int32_ptr(kv_indices), int32_ptr(last_page_offset),
+      num_layers, layer_idx, num_heads, page_size, batch_size);
+}
+
+void init_kv_f16(
+    torch::Tensor kv_data, torch::Tensor kv_param, torch::Tensor kv_indptr,
+    torch::Tensor kv_indices, torch::Tensor last_page_offset, torch::Tensor key,
+    torch::Tensor value, torch::Tensor key_param, torch::Tensor value_param,
+    torch::Tensor seqlen_indptr, int num_layers, int layer_idx, int num_heads,
+    int page_size, int batch_size) {
+  FlashInferInitKvKernel_f16<128>(
+      kv_data.data_ptr(), half2_ptr(kv_param), int32_ptr(kv_indptr),
+      int32_ptr(kv_indices), int32_ptr(last_page_offset), key.data_ptr(),
+      value.data_ptr(), half2_ptr(key_param), half2_ptr(value_param),
+      int32_ptr(seqlen_indptr), num_layers, layer_idx, num_heads, page_size,
+      batch_size);
+}
+
+void append_kv_f16(
+    torch::Tensor kv_data, torch::Tensor kv_param, torch::Tensor kv_indptr,
+    torch::Tensor kv_indices, torch::Tensor last_page_offset, torch::Tensor key,
+    torch::Tensor value, torch::Tensor key_param, torch::Tensor value_param,
+    int num_layers, int layer_idx, int num_heads, int page_size,
+    int batch_size) {
+  FlashInferAppendKvKernel_f16<128>(
+      kv_data.data_ptr(), half2_ptr(kv_param), int32_ptr(kv_indptr),
+      int32_ptr(kv_indices), int32_ptr(last_page_offset), key.data_ptr(),
+      value.data_ptr(), half2_ptr(key_param), half2_ptr(value_param),
+      num_layers, layer_idx, num_heads, page_size, batch_size);
+}
+
+void batch_decode_i4(
+    torch::Tensor o, torch::Tensor q, torch::Tensor kv_data,
+    torch::Tensor kv_param, torch::Tensor kv_indptr, torch::Tensor kv_indices,
+    torch::Tensor last_page_offset, int num_layers, int layer_idx,
+    int num_heads, int page_size, int batch_size) {
+  TORCH_CHECK(kv_data.is_cuda(), "kv_data must be on CUDA/HIP device");
+  TORCH_CHECK(kv_data.scalar_type() == torch::kUInt8, "i4 kv_data must be uint8 packed storage");
+  FlashInferBatchDecodeKernel_i4<128>(
+      half_ptr(o), half_ptr(q), kv_data.data_ptr(), half2_ptr(kv_param),
+      int32_ptr(kv_indptr), int32_ptr(kv_indices), int32_ptr(last_page_offset),
+      num_layers, layer_idx, num_heads, page_size, batch_size);
+}
+
+void init_kv_i4(
+    torch::Tensor kv_data, torch::Tensor kv_param, torch::Tensor kv_indptr,
+    torch::Tensor kv_indices, torch::Tensor last_page_offset, torch::Tensor key,
+    torch::Tensor value, torch::Tensor key_param, torch::Tensor value_param,
+    torch::Tensor seqlen_indptr, int num_layers, int layer_idx, int num_heads,
+    int page_size, int batch_size) {
+  TORCH_CHECK(kv_data.is_cuda(), "kv_data must be on CUDA/HIP device");
+  TORCH_CHECK(kv_data.scalar_type() == torch::kUInt8, "i4 kv_data must be uint8 packed storage");
+  FlashInferInitKvKernel_i4<128>(
+      kv_data.data_ptr(), half2_ptr(kv_param), int32_ptr(kv_indptr),
+      int32_ptr(kv_indices), int32_ptr(last_page_offset), key.data_ptr(),
+      value.data_ptr(), half2_ptr(key_param), half2_ptr(value_param),
+      int32_ptr(seqlen_indptr), num_layers, layer_idx, num_heads, page_size,
+      batch_size);
+}
+
+void append_kv_i4(
+    torch::Tensor kv_data, torch::Tensor kv_param, torch::Tensor kv_indptr,
+    torch::Tensor kv_indices, torch::Tensor last_page_offset, torch::Tensor key,
+    torch::Tensor value, torch::Tensor key_param, torch::Tensor value_param,
+    int num_layers, int layer_idx, int num_heads, int page_size,
+    int batch_size) {
+  TORCH_CHECK(kv_data.is_cuda(), "kv_data must be on CUDA/HIP device");
+  TORCH_CHECK(kv_data.scalar_type() == torch::kUInt8, "i4 kv_data must be uint8 packed storage");
+  FlashInferAppendKvKernel_i4<128>(
+      kv_data.data_ptr(), half2_ptr(kv_param), int32_ptr(kv_indptr),
+      int32_ptr(kv_indices), int32_ptr(last_page_offset), key.data_ptr(),
+      value.data_ptr(), half2_ptr(key_param), half2_ptr(value_param),
+      num_layers, layer_idx, num_heads, page_size, batch_size);
+}
+
+}  // namespace
+
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+  m.def("batch_decode_f16", &batch_decode_f16, "FlashInfer batch decode f16");
+  m.def("init_kv_f16", &init_kv_f16, "FlashInfer init paged KV cache f16");
+  m.def("append_kv_f16", &append_kv_f16, "FlashInfer append paged KV cache f16");
+  m.def("batch_decode_i4", &batch_decode_i4, "FlashInfer batch decode i4");
+  m.def("init_kv_i4", &init_kv_i4, "FlashInfer init paged KV cache i4");
+  m.def("append_kv_i4", &append_kv_i4, "FlashInfer append paged KV cache i4");
+}

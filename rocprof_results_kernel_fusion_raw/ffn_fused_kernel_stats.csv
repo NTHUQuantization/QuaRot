@@ -1,0 +1,2 @@
+"Name","Calls","TotalDurationNs","AverageNs","Percentage","MinNs","MaxNs","StdDev"
+"void (anonymous namespace)::fused_ffn_silu_hadamard_quant_kernel<256>(__half const*, __half const*, unsigned char*, __half*, int, int)",20,69807,3490.350000,100.00,2834,5367,569.484927

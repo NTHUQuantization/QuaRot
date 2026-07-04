@@ -1,0 +1,3 @@
+"Name","Calls","TotalDurationNs","AverageNs","Percentage","MinNs","MaxNs","StdDev"
+"(anonymous namespace)::output_had_quant_kernel(__half const*, unsigned char*, __half*, int)",20,73198,3659.900000,92.32,2761,5021,514.448494
+"__amd_rocclr_copyBuffer",1,6091,6091.000000,7.68,6091,6091,0.00000000e+00

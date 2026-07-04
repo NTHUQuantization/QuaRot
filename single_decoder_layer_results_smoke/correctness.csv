@@ -1,0 +1,6 @@
+batch,seq_len,ffn_hidden,variant,reference,max_error,mean_error,mean_relative_error
+1,10,11008,fp16_baseline,fp16_baseline,0.0,0.0,0.0
+1,10,11008,quarot_unfused,fp16_baseline,11.9765625,2.4886276721954346,249.7688751220703
+1,10,11008,quarot_unfused,quarot_unfused,0.0,0.0,0.0
+1,10,11008,fused_quarot,fp16_baseline,11.640625,2.4886116981506348,399.4797058105469
+1,10,11008,fused_quarot,quarot_unfused,0.9462890625,0.2102595865726471,95.87113189697266

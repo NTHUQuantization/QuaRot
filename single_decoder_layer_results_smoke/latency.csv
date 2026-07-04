@@ -1,0 +1,4 @@
+batch,seq_len,ffn_hidden,variant,latency_ms
+1,10,11008,fp16_baseline,1.1626429557800293
+1,10,11008,quarot_unfused,4.639877796173096
+1,10,11008,fused_quarot,1.04037344455719

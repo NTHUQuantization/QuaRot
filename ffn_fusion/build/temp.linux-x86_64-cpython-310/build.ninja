@@ -1,0 +1,35 @@
+ninja_required_version = 1.3
+cxx = c++
+nvcc = /opt/rocm/bin/hipcc
+
+cflags = -Wno-unused-result -Wsign-compare -DNDEBUG -g -fwrapv -O2 -Wall -g -fstack-protector-strong -Wformat -Werror=format-security -g -fwrapv -O2 -fPIC -I/opt/venv/lib/python3.10/site-packages/torch/include -I/opt/venv/lib/python3.10/site-packages/torch/include/torch/csrc/api/include -I/opt/venv/lib/python3.10/site-packages/torch/include/THH -I/opt/rocm/include -I/opt/venv/include -I/usr/include/python3.10 -c
+post_cflags = -D__HIP_PLATFORM_AMD__=1 -DUSE_ROCM=1 -DHIPBLAS_V2 -fPIC -D__HIP_PLATFORM_AMD__=1 -DUSE_ROCM=1 -DHIPBLAS_V2 -fPIC -O3 -DTORCH_API_INCLUDE_EXTENSION_H -DTORCH_EXTENSION_NAME=ffn_fusion_hip -std=c++17
+cuda_cflags = -I/opt/venv/lib/python3.10/site-packages/torch/include -I/opt/venv/lib/python3.10/site-packages/torch/include/torch/csrc/api/include -I/opt/venv/lib/python3.10/site-packages/torch/include/THH -I/opt/rocm/include -I/opt/venv/include -I/usr/include/python3.10 -c
+cuda_post_cflags = -D__HIP_PLATFORM_AMD__=1 -DUSE_ROCM=1 -DHIPBLAS_V2 -fPIC -DCUDA_HAS_FP16=1 -D__HIP_NO_HALF_OPERATORS__=1 -D__HIP_NO_HALF_CONVERSIONS__=1 -DHIP_ENABLE_WARP_SYNC_BUILTINS=1 -O3 -DHIP_ENABLE_WARP_SYNC_BUILTINS=1 --offload-arch=gfx1201 -DTORCH_API_INCLUDE_EXTENSION_H -DTORCH_EXTENSION_NAME=ffn_fusion_hip -fno-gpu-rdc -std=c++17
+cuda_dlink_post_cflags = 
+sycl_dlink_post_cflags = 
+ldflags = 
+
+rule compile
+  command = $cxx -MMD -MF $out.d $cflags -c $in -o $out $post_cflags
+  depfile = $out.d
+  deps = gcc
+
+rule cuda_compile
+  command = $nvcc  $cuda_cflags -c $in -o $out $cuda_post_cflags
+
+
+
+
+
+
+
+build /workspace/QuaRot/ffn_fusion/build/temp.linux-x86_64-cpython-310/ffn_fusion.o: cuda_compile /workspace/QuaRot/ffn_fusion/ffn_fusion.hip
+
+
+
+
+
+
+
+
