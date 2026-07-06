@@ -648,6 +648,14 @@ __global__ void BatchDecodeWithPagedKVCacheKernel(
         paramK.x, paramK.y
       );
       block.sync();
+      // Check whether compute_qk is wrong
+      // if (blockIdx.x == 0 &&
+      //     blockIdx.y == 0 &&
+      //     threadIdx.x == 0 &&
+      //     threadIdx.y == 0) {
+
+      //     printf("x=%f\n", x);
+      // }
 
       // load k tiles
       cp_async::pred_load<vec_bits, true>(

@@ -6,6 +6,9 @@ python setup_flashinfer.py build_ext --inplace
 python -c "import flashinfer_test._HIP"
 # Only build flashinfer
 hipcc -c flashinfer.cu -I./include_hip -o flashinfer.o 
+
+# Need to add the following flag to use the lib
+export LD_LIBRARY_PATH=$CONDA_PREFIX/lib/python3.12/site-packages/torch/lib:$LD_LIBRARY_PATH
 ```
 
 # setup_flashinfer.py

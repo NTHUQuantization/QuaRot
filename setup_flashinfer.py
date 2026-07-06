@@ -17,6 +17,7 @@ setup(
 
             sources=[
                 "flashinfer.hip",
+                "binding.cpp"
             ],
 
             include_dirs=[

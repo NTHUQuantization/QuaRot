@@ -142,7 +142,6 @@ void FlashInferBatchDecodeKernel_f16(__half* o, __half* q, void* kv_data,
   constexpr size_t bdy = 128 / bdx;
   dim3 nblks(paged_kv.batch_size, paged_kv.num_heads);
   dim3 nthrs(bdx, bdy);
-
  hipLaunchKernelGGL(( flashinfer::BatchDecodeWithPagedKVCacheKernel<
       rotary_mode, norm_on_the_fly, vec_size, bdx, bdy, FoldFactor, DTypeInQ,
       DTypeIn, DTypeOut, int32_t>), dim3(nblks), dim3(nthrs), 0, 0, 
