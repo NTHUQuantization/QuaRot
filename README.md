@@ -2,8 +2,6 @@
 ``` bash
 # Build
 python setup_flashinfer.py build_ext --inplace
-# Import
-python -c "import flashinfer_test._HIP"
 # Only build flashinfer
 hipcc -c flashinfer.cu -I./include_hip -o flashinfer.o 
 
