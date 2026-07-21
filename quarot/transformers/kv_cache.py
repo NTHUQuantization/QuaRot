@@ -2,7 +2,7 @@ from transformers.cache_utils import Cache
 from typing import Optional, Tuple, Dict, Any
 import math
 import torch
-from .. import _CUDA
+from .. import _HIP
 import functools
 from fast_hadamard_transform import hadamard_transform
 from quarot.functional.quantization import get_minq_maxq
@@ -27,7 +27,7 @@ def unpack_i4_and_asym_dequantize(q, scale, zero):
     q = torch.stack((q & 0x0f, (q >> 4) & 0x0f), dim=-1).view(*q.shape[:-1], q.shape[-1] * 2)
     return q * scale - zero
 
-def matmul_had_cuda(X, dtype):
+def matmul_had_HIP(X, dtype):
     n = X.shape[-1]
     input = hadamard_transform(X.to(dtype).contiguous(), scale=1/math.sqrt(n))
     return input.to(X.dtype).view(X.shape) 
@@ -38,7 +38,7 @@ def init_kv_i4(kv_data, kv_param,
                last_page_offset, k,
                v, k_param, v_param,
                seqlen_indptr, layer_idx):
-    return _CUDA.init_kv_i4(
+    return _HIP.init_kv_i4(
         kv_data, kv_param,
         kv_indptr, kv_indices,
         last_page_offset, k,
@@ -51,7 +51,7 @@ def append_kv_i4(kv_data, kv_param,
                last_page_offset, k,
                v, k_param, v_param,
                layer_idx):
-    return _CUDA.append_kv_i4(
+    return _HIP.append_kv_i4(
         kv_data, kv_param,
         kv_indptr, kv_indices,
         last_page_offset, k,
@@ -61,7 +61,7 @@ def append_kv_i4(kv_data, kv_param,
 def batch_decode_i4(o, q, kv_data, kv_param,
                kv_indptr, kv_indices,
                last_page_offset, layer_idx):
-    return _CUDA.batch_decode_i4(
+    return _HIP.batch_decode_i4(
         o, q, kv_data, kv_param,
         kv_indptr, kv_indices,
         last_page_offset, layer_idx)
@@ -72,7 +72,7 @@ def init_kv_f16(kv_data, kv_param,
                last_page_offset, k,
                v, k_param, v_param,
                seqlen_indptr, layer_idx):
-    return _CUDA.init_kv_f16(
+    return _HIP.init_kv_f16(
         kv_data, kv_param,
         kv_indptr, kv_indices,
         last_page_offset, k,
@@ -85,7 +85,7 @@ def append_kv_f16(kv_data, kv_param,
                last_page_offset, k,
                v, k_param, v_param,
                layer_idx):
-    return _CUDA.append_kv_f16(
+    return _HIP.append_kv_f16(
         kv_data, kv_param,
         kv_indptr, kv_indices,
         last_page_offset, k,
@@ -95,7 +95,7 @@ def append_kv_f16(kv_data, kv_param,
 def batch_decode_f16(o, q, kv_data, kv_param,
                kv_indptr, kv_indices,
                last_page_offset, layer_idx):
-    return _CUDA.batch_decode_f16(
+    return _HIP.batch_decode_f16(
         o, q, kv_data, kv_param,
         kv_indptr, kv_indices,
         last_page_offset, layer_idx)
@@ -113,7 +113,7 @@ class _AttentionStub(object):
         assert q_len == 1
         q = q.view(batch_size, num_qo_heads, head_dim)
         if self.hadamard_dtype is not None:
-            q = matmul_had_cuda(q, dtype=self.hadamard_dtype) 
+            q = matmul_had_HIP(q, dtype=self.hadamard_dtype) 
         attn_output = torch.empty_like(q)
         if self.disable_quant:
             batch_decode = batch_decode_f16
@@ -133,7 +133,10 @@ class MultiLayerPagedKVCache4Bit(Cache):
         device, n_layers, num_heads, head_dim, 
         disable_quant=False, hadamard_dtype=torch.float16 ):
         self.page_size = page_size
-        self.batch_size = batch_size
+        # transformers.Cache exposes ``batch_size`` as a read-only property.
+        # Store the value privately and expose it below so this cache keeps the
+        # same public API without assigning to the base-class descriptor.
+        self._batch_size = batch_size
         max_page_cnt = self.page_cnt_from_length(max_seq_len)
         self.disable_quant = disable_quant
         self.pages = torch.empty(
@@ -161,6 +164,10 @@ class MultiLayerPagedKVCache4Bit(Cache):
 
     def page_cnt_from_length(self, length):
         return (length + self.page_size - 1) // self.page_size
+
+    @property
+    def batch_size(self):
+        return self._batch_size
     
     def _ensure_page_cnt_per_batch(self, expected_page_cnt_per_batch):
         expected_page_cnt = expected_page_cnt_per_batch * self.batch_size
@@ -186,7 +193,7 @@ class MultiLayerPagedKVCache4Bit(Cache):
         orig_value_states = value_states
 
         if self.hadamard_dtype is not None:
-            key_states = matmul_had_cuda(key_states, dtype=self.hadamard_dtype)
+            key_states = matmul_had_HIP(key_states, dtype=self.hadamard_dtype)
 
         if self.disable_quant:
             k_scale = key_states.new_ones((b_sz, added_length, num_heads, 1))

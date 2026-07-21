@@ -3,7 +3,7 @@ from . import nn
 from . import functional
 
 
-import quarot._CUDA
+import quarot._HIP
 
 
 __all__ = [ 
