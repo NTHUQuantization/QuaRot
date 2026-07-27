@@ -1,0 +1,12 @@
+{
+  "model_id": "meta-llama/Llama-3.1-8B",
+  "compatible": true,
+  "reason": "GQA-aware K1/K2 kernels and the formal token-by-token QuaRot wrapper are enabled. The wrapper keeps HF weights/modules for prefill and projections, then routes decode_one through the QuaRot paged-cache K1/K2/K3/FFN path. This is not a monkey-patch of transformers.generate internals.",
+  "hidden_size": 4096,
+  "intermediate_size": 14336,
+  "num_hidden_layers": 32,
+  "num_attention_heads": 32,
+  "num_key_value_heads": 8,
+  "head_dim": 128,
+  "vocab_size": 128256
+}

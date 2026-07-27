@@ -320,10 +320,48 @@ class SingleDecoderLayerHarness:
             down = (ffn_intermediate.half() @ w.w_down)
             return x_cur + (o_in @ w.wo) + down
 
-        use_k1 = variant in {"k1_fused", "k1_k2_fused", "attention_fused", "full_fused", "fused_quarot"}
-        use_k2 = variant in {"k1_k2_fused", "attention_fused", "full_fused", "fused_quarot"}
-        use_k3 = variant in {"attention_fused", "full_fused", "fused_quarot"}
-        use_ffn = variant in {"full_fused", "fused_quarot"}
+        use_k1 = variant in {
+            "k1_fused",
+            "k1_k2_fused",
+            "attention_fused",
+            "attention_fused_current",
+            "attention_fused_hadacore256",
+            "full_fused",
+            "fused_quarot",
+            "full_fused_current",
+            "full_fused_hadacore256_ffn",
+            "full_fused_hadacore256_k3_ffn",
+        }
+        use_k2 = variant in {
+            "k1_k2_fused",
+            "attention_fused",
+            "attention_fused_current",
+            "attention_fused_hadacore256",
+            "full_fused",
+            "fused_quarot",
+            "full_fused_current",
+            "full_fused_hadacore256_ffn",
+            "full_fused_hadacore256_k3_ffn",
+        }
+        use_k3 = variant in {
+            "attention_fused",
+            "attention_fused_current",
+            "attention_fused_hadacore256",
+            "full_fused",
+            "fused_quarot",
+            "full_fused_current",
+            "full_fused_hadacore256_ffn",
+            "full_fused_hadacore256_k3_ffn",
+        }
+        use_ffn = variant in {
+            "full_fused",
+            "fused_quarot",
+            "full_fused_current",
+            "full_fused_hadacore256_ffn",
+            "full_fused_hadacore256_k3_ffn",
+        }
+        use_k3_hadacore = variant in {"attention_fused_hadacore256", "full_fused_hadacore256_k3_ffn"}
+        use_ffn_hadacore = variant in {"full_fused_hadacore256_ffn", "full_fused_hadacore256_k3_ffn"}
 
         if use_k1:
             append_quantized_kv_decode(
@@ -342,7 +380,10 @@ class SingleDecoderLayerHarness:
 
         attn_2d = attn.reshape(batch, D_MODEL)
         if use_k3:
-            packed, scales = quantize_attention_output(attn_2d)
+            packed, scales = quantize_attention_output(
+                attn_2d,
+                backend="hadacore256" if use_k3_hadacore else "current",
+            )
             o_in = dequant_grouped(packed, scales, 256)
         else:
             packed, scales = quantize_grouped(hadamard(attn_2d.reshape(batch, 16, 256)).reshape(batch, D_MODEL), 256)
@@ -351,7 +392,10 @@ class SingleDecoderLayerHarness:
         ffn_gate_source = x_cur + (o_in @ w.wo)
         gate, up = self.ffn_inputs(ffn_gate_source)
         if use_ffn:
-            ffn_packed, ffn_scales = ffn_fusion_hip.fused_ffn_silu_hadamard_quant(gate, up, 256)
+            if use_ffn_hadacore:
+                ffn_packed, ffn_scales = ffn_fusion_hip.fused_ffn_silu_hadamard_quant_hadacore256(gate, up)
+            else:
+                ffn_packed, ffn_scales = ffn_fusion_hip.fused_ffn_silu_hadamard_quant(gate, up, 256)
         else:
             ffn_packed, ffn_scales = quantize_grouped(
                 hadamard((F.silu(gate.float()) * up.float()).reshape(batch, -1, 256)).reshape(batch, self.shape.ffn_hidden),
@@ -368,13 +412,19 @@ VARIANTS = [
     "k1_fused",
     "k1_k2_fused",
     "attention_fused",
+    "attention_fused_hadacore256",
     "fused_quarot",
+    "full_fused_hadacore256_ffn",
+    "full_fused_hadacore256_k3_ffn",
 ]
 
 ALIASES = {
     "quarot_unfused": "quarot_unfused",
     "unfused_all": "quarot_unfused",
     "full_fused": "fused_quarot",
+    "unfused_INT4": "quarot_unfused",
+    "attention_fused_current": "attention_fused",
+    "full_fused_current": "fused_quarot",
 }
 
 
@@ -481,7 +531,16 @@ def ablation(args):
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     rows: List[Dict] = []
-    variants = ["quarot_unfused", "k1_fused", "k1_k2_fused", "attention_fused", "fused_quarot"]
+    variants = [
+        "quarot_unfused",
+        "k1_fused",
+        "k1_k2_fused",
+        "attention_fused_current",
+        "attention_fused_hadacore256",
+        "full_fused_current",
+        "full_fused_hadacore256_ffn",
+        "full_fused_hadacore256_k3_ffn",
+    ]
     for shape in shape_iter(args):
         harness = SingleDecoderLayerHarness(shape, args.seed)
         baseline = None
@@ -495,7 +554,7 @@ def ablation(args):
                 "ffn_hidden": shape.ffn_hidden,
                 "variant": variant,
                 "latency_ms": ms,
-                "speedup_vs_unfused": baseline / ms,
+                "speedup_vs_unfused_INT4": baseline / ms,
             })
     write_csv(out_dir / "ablation.csv", rows)
     write_ablation_markdown(out_dir / "ablation.md", rows)
@@ -555,7 +614,7 @@ def write_ablation_markdown(path, rows):
         write_markdown_table(
             f,
             rows,
-            ["batch", "seq_len", "ffn_hidden", "variant", "latency_ms", "speedup_vs_unfused"],
+            ["batch", "seq_len", "ffn_hidden", "variant", "latency_ms", "speedup_vs_unfused_INT4"],
         )
 
 

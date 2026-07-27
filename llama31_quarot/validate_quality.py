@@ -53,6 +53,8 @@ def main():
     parser.add_argument("--model-id", default="meta-llama/Llama-3.1-8B")
     parser.add_argument("--reference-mode", choices=["fp16_hf", "quarot_unfused", "fused_quarot"], default="fp16_hf")
     parser.add_argument("--candidate-mode", choices=["fp16_hf", "quarot_unfused", "fused_quarot"], default="fp16_hf")
+    parser.add_argument("--reference-fusion-backend", choices=["current", "hadacore256"], default="current")
+    parser.add_argument("--candidate-fusion-backend", choices=["current", "hadacore256"], default="current")
     parser.add_argument("--out-dir", default="llama31_full_model_results")
     parser.add_argument("--prompts", default=None)
     parser.add_argument("--max-lengths", default="16,128,1024")
@@ -79,8 +81,8 @@ def main():
     (out_dir / "model_shape.json").write_text(json.dumps(status.__dict__, indent=2))
     if args.reference_mode != "fp16_hf" or args.candidate_mode != "fp16_hf":
         require_fused_full_model_supported(model)
-    ref_wrapper = wrap_model(model, args.reference_mode)
-    cand_wrapper = wrap_model(model, args.candidate_mode)
+    ref_wrapper = wrap_model(model, args.reference_mode, fusion_backend=args.reference_fusion_backend)
+    cand_wrapper = wrap_model(model, args.candidate_mode, fusion_backend=args.candidate_fusion_backend)
 
     prompts = load_prompts(args.prompts)
     lengths = [int(x) for x in args.max_lengths.replace(",", " ").split()]
@@ -95,6 +97,8 @@ def main():
             rows.append({
                 "reference_mode": args.reference_mode,
                 "candidate_mode": args.candidate_mode,
+                "reference_fusion_backend": args.reference_fusion_backend if args.reference_mode == "fused_quarot" else "none",
+                "candidate_fusion_backend": args.candidate_fusion_backend if args.candidate_mode == "fused_quarot" else "none",
                 "prompt_id": prompt_id,
                 "max_length": max_len,
                 **metrics,
@@ -104,13 +108,14 @@ def main():
             "prompt_id": prompt_id,
             "prompt": prompt,
             "mode": args.candidate_mode,
+            "fusion_backend": args.candidate_fusion_backend if args.candidate_mode == "fused_quarot" else "none",
             "text": generate_text(cand_wrapper, tokenizer, inputs, args.max_new_tokens),
         })
     write_csv(out_dir / "quality_logits.csv", rows)
     with (out_dir / "generation_samples.md").open("w") as f:
         f.write("# Llama-3.1 8B Generation Samples\n\n")
         for sample in samples:
-            f.write(f"## Prompt {sample['prompt_id']} ({sample['mode']})\n\n")
+            f.write(f"## Prompt {sample['prompt_id']} ({sample['mode']}, backend={sample['fusion_backend']})\n\n")
             f.write("Prompt:\n\n")
             f.write(sample["prompt"] + "\n\n")
             f.write("Output:\n\n")

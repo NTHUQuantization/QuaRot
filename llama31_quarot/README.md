@@ -56,3 +56,35 @@ python3 -m llama31_quarot.summarize_formal_full_model \
 ```
 
 The latest formal full-model report is `llama31_formal_full_model_report_zh.md`.
+
+## Decode bottleneck profiling
+
+The fixed-context benchmark excludes model loading, prefill, cache conversion,
+and warmup from decode timing. It compares `unfused_INT4`, `fused_current`, and
+`fused_hadacore256` with one shared model and identical inputs.
+
+```bash
+python3 -m llama31_quarot.profile_decode_bottlenecks \
+  --task all \
+  --local-files-only \
+  --out-dir decode_bottleneck_profiling_results
+
+ROCPROF_ITERS=3 RUN_COUNTERS=1 \
+  bash llama31_quarot/profile_decode_bottlenecks_rocprof.sh
+
+python3 -m llama31_quarot.summarize_decode_bottlenecks \
+  --dir decode_bottleneck_profiling_results
+
+# A second report comparing only unfused_INT4 and fused_current:
+python3 -m llama31_quarot.summarize_decode_bottlenecks \
+  --dir decode_bottleneck_profiling_results \
+  --exclude-hadacore \
+  --report-name decode_bottleneck_profiling_report_no_hadacore_zh.md \
+  --chart-dir-name charts_no_hadacore
+```
+
+The summary command also regenerates the latency/scaling/rocprof/roofline
+charts under `decode_bottleneck_profiling_results/charts/` and writes
+`gemm_bound_analysis.csv`. The generated report is
+`decode_bottleneck_profiling_report_zh.md`. All speedups use `unfused_INT4`
+as the baseline.

@@ -1,0 +1,4 @@
+variant,batch,context_len,rocblas_kernel_ms_per_token,fp16_weight_bytes_lower_bound,algorithmic_flops,arithmetic_intensity_flop_per_byte_upper_bound,effective_tflops,effective_weight_bandwidth_GBps,percent_of_peak_memory_bandwidth,hardware_ridge_point_flop_per_byte,bound_classification
+fused_current,1,128,32.573606,15009316864,15009316864,1.0,0.46078155620842226,460.7815562084222,71.99711815756596,298.4375,memory/weight-streaming bound at measured batch
+fused_current,1,4096,32.717844666666664,15009316864,15009316864,1.0,0.4587501718684933,458.75017186849334,71.67971435445209,298.4375,memory/weight-streaming bound at measured batch
+fused_current,4,1024,33.30435266666667,15009316864,60037267456,4.0,1.8026853143459987,450.67132858649967,70.41739509164057,298.4375,memory/weight-streaming bound at measured batch

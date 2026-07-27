@@ -1,0 +1,2 @@
+variant,batch,context_len,iterations,total_ms,decode_ms_per_token
+fused_current,1,4096,3,456.0071105957031,152.00237019856772

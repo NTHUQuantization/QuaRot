@@ -96,11 +96,28 @@ def append_quantized_kv_decode(
     return kv_data, kv_param
 
 
-def quantize_attention_output(attention_out: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+def quantize_attention_output(attention_out: torch.Tensor, backend: str = "current") -> Tuple[torch.Tensor, torch.Tensor]:
     """Apply block Hadamard over 256-wide groups of a 4096-wide attention output and pack INT4."""
     if attention_out.size(-1) != ATTENTION_OUT_DIM:
         raise ValueError("attention_out last dimension must be 4096")
-    return attention_fusion_hip.output_had_quant(attention_out.contiguous())
+    attention_out = attention_out.contiguous()
+    if backend == "current":
+        return attention_fusion_hip.output_had_quant(attention_out)
+    if backend == "hadacore256":
+        return attention_fusion_hip.output_had_quant_hadacore256(attention_out)
+    if backend == "hadacore4096_experimental":
+        return attention_fusion_hip.output_had_quant_hadacore4096_experimental(attention_out)
+    raise ValueError(f"unknown K3 backend: {backend}")
+
+
+def quantize_attention_output_hadacore256(attention_out: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    return quantize_attention_output(attention_out, backend="hadacore256")
+
+
+def quantize_attention_output_hadacore4096_experimental(
+    attention_out: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    return quantize_attention_output(attention_out, backend="hadacore4096_experimental")
 
 
 def quantize_attention_output_inplace(

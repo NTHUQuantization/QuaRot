@@ -15,6 +15,8 @@ os.environ.setdefault("PYTORCH_ROCM_ARCH", ";".join(hip_arches))
 hip_flags = [
     "-O3",
     "-DHIP_ENABLE_WARP_SYNC_BUILTINS=1",
+    "-DHADACORE_ENABLE_EXPERIMENTAL_WMMA=1",
+    "-DHADACORE_FORCE_GFX12_WMMA=1",
 ]
 hip_flags.extend(shlex.split(os.environ.get("FFN_FUSION_HIP_EXTRA_FLAGS", "")))
 for arch in hip_arches:

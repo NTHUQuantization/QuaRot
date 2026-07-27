@@ -53,6 +53,8 @@ class QuaRotFusedDecodeLayer:
         num_layers: int = 1,
         layer_idx: int = 0,
         ffn_group_size: int = 256,
+        k3_backend: str = "current",
+        ffn_backend: str = "current",
         device: torch.device | str = "cuda",
     ):
         if head_dim != 128:
@@ -67,6 +69,8 @@ class QuaRotFusedDecodeLayer:
         self.num_layers = num_layers
         self.layer_idx = layer_idx
         self.ffn_group_size = ffn_group_size
+        self.k3_backend = k3_backend
+        self.ffn_backend = ffn_backend
         self.device = torch.device(device)
         self.metadata = make_uniform_paged_kv_metadata(batch_size, seq_len, page_size, self.device)
         self.kv_data, self.kv_param = allocate_quantized_kv_cache(
@@ -111,12 +115,24 @@ class QuaRotFusedDecodeLayer:
         return out
 
     def quantize_attention(self, attention: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        return quantize_attention_output(attention.reshape(self.batch_size, self.num_heads * self.head_dim))
+        return quantize_attention_output(
+            attention.reshape(self.batch_size, self.num_heads * self.head_dim),
+            backend=self.k3_backend,
+        )
 
     def quantize_ffn(self, gate: torch.Tensor, up: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        packed, scales = ffn_fusion_hip.fused_ffn_silu_hadamard_quant(
-            gate.contiguous(), up.contiguous(), self.ffn_group_size
-        )
+        if self.ffn_backend == "current":
+            packed, scales = ffn_fusion_hip.fused_ffn_silu_hadamard_quant(
+                gate.contiguous(), up.contiguous(), self.ffn_group_size
+            )
+        elif self.ffn_backend == "hadacore256":
+            if self.ffn_group_size != 256:
+                raise ValueError("hadacore256 FFN backend requires ffn_group_size=256")
+            packed, scales = ffn_fusion_hip.fused_ffn_silu_hadamard_quant_hadacore256(
+                gate.contiguous(), up.contiguous()
+            )
+        else:
+            raise ValueError(f"unknown FFN backend: {self.ffn_backend}")
         return packed, scales
 
     def decode_step(
@@ -142,4 +158,3 @@ class QuaRotFusedDecodeLayer:
             kv_data=self.kv_data,
             kv_param=self.kv_param,
         )
-

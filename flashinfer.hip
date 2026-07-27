@@ -16,6 +16,10 @@ void FlashInferBatchDecodeKernel_i4(__half* o, __half* q, void* kv_data,
                                     int32_t* last_page_offset, int num_layers,
                                     int layer_idx, int num_heads, int page_size,
                                     int batch_size) {
+  // K2 fused decode over the paged INT4 cache produced by K1.
+  // This wrapper only builds FlashInfer's typed paged_kv_t view and launch
+  // geometry; dequantization, attention score accumulation, and value reduction
+  // happen inside BatchDecodeWithPagedKVCacheKernel.
   using DTypeIn = flashinfer::quant::__precision__s4;
   using DTypeInQ = __half;
   using DTypeOut = __half;
@@ -30,6 +34,8 @@ void FlashInferBatchDecodeKernel_i4(__half* o, __half* q, void* kv_data,
   const float rope_inv_scale = 1.f / rope_scale;
   const float rope_inv_theta = 1.f / rope_theta;
 
+  // K1 already handles optional RoPE on K before cache append, so K2 runs with
+  // RotaryMode::kNone and consumes the stored rotated/quantized K/V directly.
   constexpr bool norm_on_the_fly = false;
   constexpr auto rotary_mode = flashinfer::RotaryMode::kNone;
   constexpr size_t FoldFactor = 2;
@@ -46,7 +52,7 @@ void FlashInferBatchDecodeKernel_i4(__half* o, __half* q, void* kv_data,
 
  hipLaunchKernelGGL(( flashinfer::BatchDecodeWithPagedKVCacheKernel<
       rotary_mode, norm_on_the_fly, vec_size, bdx, bdy, FoldFactor, DTypeInQ,
-      DTypeIn, DTypeOut, int32_t>), dim3(nblks), dim3(nthrs), 0, 0, 
+      DTypeIn, DTypeOut, int32_t>), dim3(nblks), dim3(nthrs), 0, 0,
       q, paged_kv, o, sm_scale, rope_inv_scale, rope_inv_theta);
 }
 
@@ -58,6 +64,8 @@ void FlashInferBatchDecodeKernel_i4_gqa(__half* o, __half* q, void* kv_data,
                                         int layer_idx, int num_q_heads,
                                         int num_kv_heads, int page_size,
                                         int batch_size) {
+  // GQA variant: the paged cache is indexed by KV heads, while the grid is
+  // launched over query heads. FlashInfer maps each Q head to its KV group.
   using DTypeIn = flashinfer::quant::__precision__s4;
   using DTypeInQ = __half;
   using DTypeOut = __half;
@@ -117,7 +125,7 @@ constexpr size_t vec_size = (vec_size_a > vec_size_b ? vec_size_a : vec_size_b);
   dim3 nblks(paged_kv.batch_size * ((paged_kv.num_heads + bdy - 1) / bdy));
   dim3 nthrs(bdx, bdy);
  hipLaunchKernelGGL(( flashinfer::AppendPagedKVCachePrefillKernel<head_dim, vec_size, bdx, bdy, T,
-                                              int32_t>), dim3(nblks), dim3(nthrs), 0, 0, 
+                                              int32_t>), dim3(nblks), dim3(nthrs), 0, 0,
       paged_kv, (T*)key, (T*)value, key_param, value_param, seqlen_indptr);
 }
 
@@ -188,7 +196,7 @@ void FlashInferBatchDecodeKernel_f16(__half* o, __half* q, void* kv_data,
 
  hipLaunchKernelGGL(( flashinfer::BatchDecodeWithPagedKVCacheKernel<
       rotary_mode, norm_on_the_fly, vec_size, bdx, bdy, FoldFactor, DTypeInQ,
-      DTypeIn, DTypeOut, int32_t>), dim3(nblks), dim3(nthrs), 0, 0, 
+      DTypeIn, DTypeOut, int32_t>), dim3(nblks), dim3(nthrs), 0, 0,
       q, paged_kv, o, sm_scale, rope_inv_scale, rope_inv_theta);
 }
 
@@ -259,7 +267,7 @@ constexpr size_t vec_size = (vec_size_a > vec_size_b ? vec_size_a : vec_size_b);
   dim3 nblks(paged_kv.batch_size * ((paged_kv.num_heads + bdy - 1) / bdy));
   dim3 nthrs(bdx, bdy);
  hipLaunchKernelGGL(( flashinfer::AppendPagedKVCachePrefillKernel<head_dim, vec_size, bdx, bdy, T,
-                                              int32_t>), dim3(nblks), dim3(nthrs), 0, 0, 
+                                              int32_t>), dim3(nblks), dim3(nthrs), 0, 0,
       paged_kv, (T*)key, (T*)value, key_param, value_param, seqlen_indptr);
 }
 

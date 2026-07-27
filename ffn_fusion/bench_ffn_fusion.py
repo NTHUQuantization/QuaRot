@@ -39,12 +39,22 @@ def unpack_s4(packed):
     return torch.stack((lo, hi), dim=-1).flatten(-2)
 
 
-def bench(rows, cols, group_size, iters, warmup, ref_iters):
+def run_backend(gate, up, group_size, backend):
+    if backend == "current":
+        return ffn_fusion_hip.fused_ffn_silu_hadamard_quant(gate, up, group_size)
+    if backend == "hadacore256":
+        if group_size != 256:
+            raise ValueError("hadacore256 backend requires group_size=256")
+        return ffn_fusion_hip.fused_ffn_silu_hadamard_quant_hadacore256(gate, up)
+    raise ValueError(f"unknown backend: {backend}")
+
+
+def bench(rows, cols, group_size, backend, iters, warmup, ref_iters):
     torch.manual_seed(0)
     gate = torch.randn((rows, cols), device="cuda", dtype=torch.float16)
     up = torch.randn((rows, cols), device="cuda", dtype=torch.float16)
 
-    packed, scales = ffn_fusion_hip.fused_ffn_silu_hadamard_quant(gate, up, group_size)
+    packed, scales = run_backend(gate, up, group_size, backend)
     torch.cuda.synchronize()
     ref_packed, ref_scales, ref_q = reference(gate, up, group_size)
     got_q = unpack_s4(packed).reshape(-1, cols // group_size, group_size)
@@ -54,14 +64,14 @@ def bench(rows, cols, group_size, iters, warmup, ref_iters):
     scale_maxerr = (scales.float() - ref_scales.float()).abs().max().item()
 
     for _ in range(warmup):
-        ffn_fusion_hip.fused_ffn_silu_hadamard_quant(gate, up, group_size)
+        run_backend(gate, up, group_size, backend)
     torch.cuda.synchronize()
 
     start = torch.cuda.Event(enable_timing=True)
     end = torch.cuda.Event(enable_timing=True)
     start.record()
     for _ in range(iters):
-        ffn_fusion_hip.fused_ffn_silu_hadamard_quant(gate, up, group_size)
+        run_backend(gate, up, group_size, backend)
     end.record()
     torch.cuda.synchronize()
     avg_ms = start.elapsed_time(end) / iters
@@ -83,6 +93,7 @@ def bench(rows, cols, group_size, iters, warmup, ref_iters):
 
     message = (
         f"shape=({rows},{cols}) group={group_size} "
+        f"backend={backend} "
         f"packed_mismatch={packed_mismatches} q_maxerr={q_maxerr} "
         f"scale_maxerr={scale_maxerr:.6g} fused_ms={avg_ms:.6f}"
     )
@@ -96,11 +107,12 @@ def main():
     parser.add_argument("--rows", type=int, default=1)
     parser.add_argument("--cols", type=int, default=14336)
     parser.add_argument("--group-size", type=int, default=256)
+    parser.add_argument("--backend", choices=["current", "hadacore256"], default="current")
     parser.add_argument("--iters", type=int, default=1000)
     parser.add_argument("--warmup", type=int, default=100)
     parser.add_argument("--ref-iters", type=int, default=50)
     args = parser.parse_args()
-    bench(args.rows, args.cols, args.group_size, args.iters, args.warmup, args.ref_iters)
+    bench(args.rows, args.cols, args.group_size, args.backend, args.iters, args.warmup, args.ref_iters)
 
 
 if __name__ == "__main__":

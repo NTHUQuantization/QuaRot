@@ -1,21 +1,21 @@
 # QuaRot HIP Kernel Fusion 評估報告
 
-日期：2026-07-04  
-環境：ROCm container `rocm/vllm-dev:rocm7.2_navi_ubuntu22.04_py3.10_pytorch_2.9_vllm_0.14.0rc0`  
-GPU：`gfx1201`，64 CU，wavefront size 32  
+日期：2026-07-04；最新 profiling 更新：2026-07-14
+環境：ROCm container `rocm/vllm-dev:rocm7.2_navi_ubuntu22.04_py3.10_pytorch_2.9_vllm_0.14.0rc0`
+GPU：`gfx1201`，64 CU，wavefront size 32
 Profiling 工具：`rocprofv3`
 
 ## 摘要
 
 本報告合併三層實驗：
 
-1. **Llama-3.1 8B formal token-by-token 評估**  
+1. **Llama-3.1 8B formal token-by-token 評估**
    使用真實 `meta-llama/Llama-3.1-8B` 權重與 tokenizer。Prefill 使用 HF model，decode 經由 `QuaRotLlamaForCausalLM` wrapper 的 `prefill()`、`decode_one()`、`generate()` 執行，可比較 FP16、QuaRot original unfused、Fused QuaRot。
 
-2. **Single decoder layer decode-step 評估**  
+2. **Single decoder layer decode-step 評估**
    比原本 projection 後的 kernel-fusion ablation 更接近真實 LLM decode layer。Harness 包含 RMSNorm/residual、QKV projection、RoPE、KV append、attention decode、O projection、FFN gate/up/down projection；fused 版本只替換 K1/K2/K3/FFN path，其餘 layer 計算保持相同。
 
-3. **元件級 fused kernel profiling**  
+3. **元件級 fused kernel profiling**
    分別量測 FFN、K1、K2、K3 的 unfused baseline、existing path、fused prototype，用來確認每個 kernel fusion 本身是否有效。
 
 最重要的結論是：**fused QuaRot 對 QuaRot original unfused INT4 path 有穩定 decoder-layer speedup，但 FP16 latency 仍需作為參考，因為 GEMM/projection 仍主導完整模型成本。** 因此目前不能宣稱 full LLM end-to-end 有 100x speedup；本報告結果應解讀為 **formal token-by-token decode / decoder layer / projected kernel path speedup**。
@@ -26,7 +26,7 @@ Profiling 工具：`rocprofv3`
 speedup_vs_unfused_INT4 = latency(unfused_INT4) / latency(variant)
 ```
 
-其中 `unfused_INT4` 指 QuaRot original unfused path：Hadamard、dynamic quant/pack、dequant、INT4 decode 相關步驟以獨立 PyTorch/既有 kernels 串接。FP16 欄位只作為參考 latency；若表中列出 FP16 的 speedup，也同樣是相對 unfused_INT4，而不是以 FP16 當 baseline。
+其中 `unfused_INT4` 指 QuaRot original unfused path：Hadamard、dynamic quant/pack、dequant、INT4 decode 相關步驟以獨立 PyTorch/既有 kernels 串接。FP16 欄位只作為絕對 latency 參考；本報告不再列 FP16 相對 unfused_INT4 的 speedup，避免把 FP16 baseline 與 INT4 fusion path 混成同一種比較。
 
 ## 實驗產物
 
@@ -57,8 +57,16 @@ speedup_vs_unfused_INT4 = latency(unfused_INT4) / latency(variant)
 - `llama31_formal_quality_unfused_vs_fused/`：QuaRot unfused vs fused QuaRot logits/generation quality。
 - `llama31_formal_rocprof/`：formal full-model representative rocprofv3 traces。
 - `llama31_formal_full_model_report_zh.md`：formal token-by-token full-model 中文報告。
+- `hadamard_wmma.cuh`：從 hadacore 移植的 gfx12 WMMA H256/H4096 device microkernel。
+- `hadacore_variant_results/component_benchmark.csv`：K3/FFN current vs hadacore variants component benchmark。
+- `hadacore_variant_results/single_decoder_layer/ablation.csv`：hadacore backend decoder-layer ablation。
+- `hadacore_variant_results/full_model_smoke_hadacore256/`：formal full-model hadacore256 backend smoke。
+- `hadacore_variant_results/full_model_quality_current_vs_hadacore256_smoke/`：current fused vs hadacore256 fused quality smoke。
 - `flashinfer_gqa_results/`：GQA-aware K2 decode correctness/latency。
 - `rocprof_flashinfer_gqa/`：GQA-aware K2 decode rocprofv3 representative trace。
+- `llama31_quarot/profile_decode_bottlenecks.py`：固定 context、stage、ablation、sequential 與 rocprof decode-only workload。
+- `decode_bottleneck_profiling_results/`：720 筆 full-grid latency、stage/ablation、九組 rocprof trace、counter 與 traffic/throughput CSV。
+- `decode_bottleneck_profiling_report_zh.md`：最新完整 decode bottleneck 中文報告。
 
 ## Single Decoder Layer Harness
 
@@ -111,17 +119,16 @@ speedup_vs_unfused_INT4 = latency(unfused_INT4) / latency(variant)
 
 - fused QuaRot 相對 unfused_INT4：`6.36x`
 - 範圍：`3.81x` 到 `21.16x`
-- FP16 參考路徑相對 unfused_INT4：`5.17x`
-- 範圍：`2.05x` 到 `12.51x`
+- FP16 路徑僅保留絕對 latency 作參考，不列 speedup。
 
 代表表：batch=1、FFN hidden=14336。
 
-| batch | seq_len | ffn_hidden | unfused_INT4 ms | FP16 ms | Fused QuaRot ms | FP16 speedup_vs_unfused_INT4 | Fused speedup_vs_unfused_INT4 |
-| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | 10 | 14336 | 4.348 | 1.174 | 1.077 | 3.704x | 4.038x |
-| 1 | 128 | 14336 | 4.242 | 1.149 | 1.082 | 3.691x | 3.919x |
-| 1 | 1024 | 14336 | 4.641 | 1.235 | 1.126 | 3.758x | 4.123x |
-| 1 | 4096 | 14336 | 5.639 | 1.530 | 1.300 | 3.686x | 4.339x |
+| batch | seq_len | ffn_hidden | unfused_INT4 ms | FP16 ms | Fused QuaRot ms | Fused speedup_vs_unfused_INT4 |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 10 | 14336 | 4.348 | 1.174 | 1.077 | 4.038x |
+| 1 | 128 | 14336 | 4.242 | 1.149 | 1.082 | 3.919x |
+| 1 | 1024 | 14336 | 4.641 | 1.235 | 1.126 | 4.123x |
+| 1 | 4096 | 14336 | 5.639 | 1.530 | 1.300 | 4.339x |
 
 完整結果在 `single_decoder_layer_results/latency.csv`。
 
@@ -156,7 +163,7 @@ speedup_vs_unfused_INT4 = latency(unfused_INT4) / latency(variant)
 
 ### Single Decoder Layer rocprofv3
 
-代表點：batch=1、L=128、FFN hidden=14336、iters=5。  
+代表點：batch=1、L=128、FFN hidden=14336、iters=5。
 rocprofv3 執行期間出現 timestamp swap warnings；CSV stats 已產生，但細粒度 kernel duration 應視為 profiling 近似值。
 
 | variant | kernel_calls_per_iter | kernel_time_us_per_iter |
@@ -169,11 +176,11 @@ rocprofv3 執行期間出現 timestamp swap warnings；CSV stats 已產生，但
 
 - QuaRot unfused path 的 kernel calls 明顯較高，主要來自 PyTorch separate Hadamard/quant/dequant/copy kernels。
 - Fused QuaRot 相對 unfused_INT4 的 kernel time speedup 約 `1.61x`，kernel calls 從 `390.8` 降到 `94.8`。
-- FP16 參考路徑相對 unfused_INT4 的 kernel time speedup 約 `1.63x`。Fused QuaRot 與 FP16 參考接近，代表目前融合主要解決 QuaRot unfused overhead，而不是取代 GEMM 主成本。
+- FP16 參考路徑只看絕對 kernel time。Fused QuaRot 與 FP16 參考接近，代表目前融合主要解決 QuaRot unfused overhead，而不是取代 GEMM 主成本。
 
 ## 元件級 Kernel Fusion Profiling
 
-來源：`rocprof_results_kernel_fusion_raw/summary.md`。  
+來源：`rocprof_results_kernel_fusion_raw/summary.md`。
 元件級測試的重點是確認各 fused kernel 本身是否比對應 unfused_INT4 baseline 更有效。
 
 | Block | Variant | Kernel time / iter (us) | speedup_vs_unfused_INT4 | Kernel calls / iter | Min semantic IO (KiB) | SQ waves / iter |
@@ -226,7 +233,7 @@ K2 有三個對照：
 結果：
 
 - QuaRot original unfused INT4 dequant + FP16 decode：`988.947 us`，`1.00x`
-- FP16 KV decode reference：`383.278 us`，`2.58x` vs unfused_INT4
+- FP16 KV decode reference：`383.278 us`，僅作絕對 latency 參考
 - optimized INT4 KV decode：`234.357 us`，`4.22x` vs unfused_INT4
 - 理論 KV/cache 讀取量：FP16 約 `16384 KiB`，INT4+scale 約 `4352 KiB`
 
@@ -239,6 +246,60 @@ K3 baseline 用 PyTorch 做 `[1,4096] -> [1,16,256]` block Hadamard，再做 gro
 - fused kernel 最小語意 I/O 約 `10.031 KiB`。
 
 K3 保持獨立 kernel 是合理的；它位於 attention output 後處理/下一層前處理之間，不建議硬塞進 FlashAttention。
+
+## hadacore 移植與比較
+
+本次只移植 `fast-hadamard-for-hip/hadacore` 的 device-level H256/H4096 WMMA microkernel，不呼叫 standalone `hadacore()` PyTorch extension。原因是 standalone extension 會重新引入中間 tensor 與額外 kernel launch，會破壞 fused kernel 的主要收益。
+
+新增內容：
+
+- `hadamard_wmma.cuh`：包含 gfx12 guarded `h256_f16`、H16 fragment helpers、outer H4096 helpers。
+- FFN API：`fused_ffn_silu_hadamard_quant_hadacore256(gate, up)`。
+- K3 API：`quantize_attention_output(..., backend="hadacore256")`、`quantize_attention_output_hadacore256(...)`。
+- K3 experimental API：`quantize_attention_output_hadacore4096_experimental(...)`。
+- Full-model API：`benchmark_full_model.py --fusion-backend current|hadacore256`。
+
+Correctness：
+
+- K3 hadacore256 rows=`1,2,4,8`：packed mismatch rate 最大 `0.00513`，scale max error 最大 `0.000488`，通過 `<=1%` / `<=0.001`。
+- K3 hadacore4096 experimental rows=`1,2,4,8`：相對 full-H4096 PyTorch reference packed mismatch rate 最大 `0.00415`，scale max error 最大 `0.000977`，通過 experimental correctness。此結果不與 current K3 block-H256 當作等價比較。
+- FFN hadacore256 rows=`1,2,4,8`、hidden=`11008,14336`：packed mismatch rate 最大 `0.00195`，scale max error `0.000244`，通過 `<=1%` / `<=0.006`。
+
+Component event benchmark：
+
+| Block | Variant | latency avg (ms) | speedup_vs_unfused_INT4 avg | speedup range | correctness note |
+| --- | --- | ---: | ---: | --- | --- |
+| K3 | unfused_INT4 | 0.7113 | 1.00x | 1.00x | reference |
+| K3 | current fused | 0.00820 | 86.79x | 84.58-88.29x | PASS |
+| K3 | hadacore256 fused | 0.00844 | 84.31x | 83.36-86.67x | PASS |
+| K3 | hadacore4096 experimental | 0.00846 | 84.21x | 79.71-87.33x | PASS vs full-H4096 reference |
+| FFN | unfused_INT4 | 0.7517 | 1.00x | 1.00x | reference |
+| FFN | current fused | 0.00752 | 100.13x | 94.56-104.18x | exact packed match in this run |
+| FFN | hadacore256 fused | 0.00730 | 103.16x | 93.15-112.76x | PASS |
+
+Decoder-layer ablation：
+
+| Variant | avg latency (ms) | avg speedup_vs_unfused_INT4 | speedup range |
+| --- | ---: | ---: | --- |
+| quarot_unfused | 8.297 | 1.00x | 1.00x |
+| attention_fused_current | 2.006 | 4.54x | 1.33-17.21x |
+| attention_fused_hadacore256 | 1.857 | 4.64x | 1.60-17.20x |
+| full_fused_current | 1.173 | 6.90x | 3.81-22.06x |
+| full_fused_hadacore256_ffn | 1.175 | 6.88x | 3.76-22.05x |
+| full_fused_hadacore256_k3_ffn | 1.207 | 6.86x | 2.97-21.55x |
+
+Formal full-model smoke：
+
+- command：`benchmark_full_model.py --mode fused_quarot --fusion-backend hadacore256 --batches 1 --context-lengths 10 --iters 1 --warmup 0 --repeats 1`
+- result：成功跑完；decode latency `57.44 ms/token`。此 smoke 只驗證 formal API wiring，不作正式效能結論。
+- quality smoke：`fused_quarot current` vs `fused_quarot hadacore256`，max error 約 `1.72-1.97`，mean error 約 `0.255-0.289`，top1 match 兩個 prompt 為 `1.0`、一個 prompt 為 `0.0`，top10 overlap `0.8-0.9`。此結果與先前 fused vs unfused 的 prototype drift 同量級，仍需正式 QuaRot calibration 後再判斷模型品質。
+
+結論：
+
+- `hadacore256` 值得保留為實驗 backend；它在 FFN component 平均略快，但 decoder/full_fused 平均沒有明確優於 current backend。
+- `K3 hadacore256` component 平均略慢於 current fused，decoder-layer attention-only 平均略快但差異接近 noise，不能直接替換 default。
+- `K3 hadacore4096_experimental` 數值與速度可行，但語意是 full 4096 rotation，不等價於目前 16 個 H256 block rotation；除非 QuaRot 設計確認需要 cross-block 4096 mixing，否則不應接入 default fused path。
+- Default production path 仍維持 current fused backend；hadacore backend 用於 profiling/研究。
 
 ## Counter 與 Memory Traffic 狀態
 
@@ -428,24 +489,24 @@ Correctness：
 
 完整 decode latency grid：
 
-| batch | context_len | unfused_INT4 ms/token | FP16 ms/token | Fused QuaRot ms/token | FP16 speedup_vs_unfused_INT4 | Fused speedup_vs_unfused_INT4 |
-| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | 10 | 117.35 | 38.43 | 40.69 | 3.05x | 2.88x |
-| 1 | 128 | 116.17 | 38.04 | 41.88 | 3.05x | 2.77x |
-| 1 | 1024 | 112.35 | 40.54 | 43.93 | 2.77x | 2.56x |
-| 1 | 4096 | 117.16 | 44.82 | 49.52 | 2.61x | 2.37x |
-| 2 | 10 | 134.36 | 39.88 | 42.15 | 3.37x | 3.19x |
-| 2 | 128 | 118.35 | 38.83 | 41.59 | 3.05x | 2.85x |
-| 2 | 1024 | 117.11 | 40.98 | 44.41 | 2.86x | 2.64x |
-| 2 | 4096 | 133.25 | 48.14 | 49.30 | 2.77x | 2.70x |
-| 4 | 10 | 133.79 | 38.80 | 41.99 | 3.45x | 3.19x |
-| 4 | 128 | 119.12 | 41.31 | 42.55 | 2.88x | 2.80x |
-| 4 | 1024 | 123.19 | 43.73 | 44.29 | 2.82x | 2.78x |
-| 4 | 4096 | 184.31 | 55.87 | 50.09 | 3.30x | 3.68x |
-| 8 | 10 | 116.59 | 39.37 | 43.01 | 2.96x | 2.71x |
-| 8 | 128 | 132.14 | 41.10 | 43.24 | 3.22x | 3.06x |
-| 8 | 1024 | 132.99 | 47.31 | 45.22 | 2.81x | 2.94x |
-| 8 | 4096 | 298.29 | 71.19 | 52.58 | 4.19x | 5.67x |
+| batch | context_len | unfused_INT4 ms/token | FP16 ms/token | Fused QuaRot ms/token | Fused speedup_vs_unfused_INT4 |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 10 | 117.35 | 38.43 | 40.69 | 2.88x |
+| 1 | 128 | 116.17 | 38.04 | 41.88 | 2.77x |
+| 1 | 1024 | 112.35 | 40.54 | 43.93 | 2.56x |
+| 1 | 4096 | 117.16 | 44.82 | 49.52 | 2.37x |
+| 2 | 10 | 134.36 | 39.88 | 42.15 | 3.19x |
+| 2 | 128 | 118.35 | 38.83 | 41.59 | 2.85x |
+| 2 | 1024 | 117.11 | 40.98 | 44.41 | 2.64x |
+| 2 | 4096 | 133.25 | 48.14 | 49.30 | 2.70x |
+| 4 | 10 | 133.79 | 38.80 | 41.99 | 3.19x |
+| 4 | 128 | 119.12 | 41.31 | 42.55 | 2.80x |
+| 4 | 1024 | 123.19 | 43.73 | 44.29 | 2.78x |
+| 4 | 4096 | 184.31 | 55.87 | 50.09 | 3.68x |
+| 8 | 10 | 116.59 | 39.37 | 43.01 | 2.71x |
+| 8 | 128 | 132.14 | 41.10 | 43.24 | 3.06x |
+| 8 | 1024 | 132.99 | 47.31 | 45.22 | 2.94x |
+| 8 | 4096 | 298.29 | 71.19 | 52.58 | 5.67x |
 
 rocprofv3 代表點：B=1,L=128；B=1,L=4096；B=4,L=1024。
 
@@ -464,7 +525,7 @@ rocprofv3 代表點：B=1,L=128；B=1,L=4096；B=4,L=1024。
 觀察：
 
 - QuaRot unfused path 的 kernel calls 明顯較高，主要來自 PyTorch separate Hadamard/quant/dequant/copy kernels。
-- Fused QuaRot 相對 unfused_INT4 有穩定 `2.37-5.67x` speedup；FP16 參考路徑相對 unfused_INT4 為 `2.61-4.19x`。
+- Fused QuaRot 相對 unfused_INT4 有穩定 `2.37-5.67x` speedup；FP16 參考路徑只保留絕對 ms/token 比較。
 - Fused QuaRot 與 FP16 reference 的絕對 latency 在小 shape 接近或略慢，在 B=4,L=4096 與 B=8 長 context 下 fused QuaRot 絕對 latency 低於 FP16 reference。
 - 這份結果是 **真實 Llama 權重的 formal token-by-token decode path**，不是 native `transformers.generate()` monkey-patch。
 
@@ -505,6 +566,50 @@ rocprofv3 representative trace：
 - top kernel group 仍以 rocBLAS GEMM (`Cijk_...`) 為主。
 - rocprof workload 包含 benchmark warmup/iters 的多次 prefill/decode kernel，因此 `kernel_time_us_per_iter` 主要作為 top-kernel 結構參考，不直接等同 event timing 的單次 latency。
 
+### Decode-only Bottleneck Profiling（最新）
+
+完整報告：`decode_bottleneck_profiling_report_zh.md`。這批結果使用 active paged-cache view 與 fixed-context decode，模型載入、prefill、cache conversion、warmup 全部排除於計時；rocprof 也只收 `roctxProfilerResume/Pause` 包住的 decode region。因此下列數據取代上方舊 formal rocprof 作為瓶頸判讀依據。
+
+另有不列入 hadacore backend、只比較 `unfused_INT4` 與 `fused_current` 的精簡版：`decode_bottleneck_profiling_report_no_hadacore_zh.md`，其圖表位於 `decode_bottleneck_profiling_results/charts_no_hadacore/`。
+
+設定：B=`1,2,4,8`、L=`10,128,1024,4096`、3 sessions、每 session 5 repeats、每 repeat warmup 10 / iterations 50，共 15 samples/shape/backend。48 組 latency summary 的 CV 全部低於 5%。
+
+| B | L | unfused_INT4 ms/token | fused_current ms/token | fused_hadacore256 ms/token | current speedup_vs_unfused_INT4 |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 128 | 110.566 | 40.717 | 40.964 | 2.715x |
+| 1 | 4096 | 109.109 | 48.082 | 48.127 | 2.269x |
+| 4 | 1024 | 108.402 | 43.275 | 43.243 | 2.505x |
+| 8 | 4096 | 297.088 | 52.176 | 51.815 | 5.694x |
+
+全 16 shapes 中，`fused_current` speedup 為 `2.27-5.69x`，平均 `2.88x`。hadacore256 相對 current 的平均 latency ratio 為 `1.001x`，差距在 noise 範圍內，不支持替換 default backend。32-token sequential decode 在 B=1,L=128 / 4096 分別為 `2.71x` / `2.30x`。
+
+rocprof decode-only：
+
+| variant | B | L | kernel calls/token | GPU busy union (ms) | estimated launch gap (ms) | 主要 kernel-time 結構 |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| unfused_INT4 | 1 | 128 | 10996 | 74.651 | 163.052 | PyTorch elementwise/copy/reduce 55.2%，rocBLAS 44.0% |
+| fused_current | 1 | 128 | 2164 | 36.134 | 21.180 | rocBLAS 84.3%，PyTorch elementwise/copy/reduce 13.7% |
+| fused_current | 1 | 4096 | 2164 | 42.939 | 24.606 | rocBLAS 71.1%，K2 INT4 17.4% |
+| fused_current | 4 | 1024 | 2164 | 40.095 | 29.577 | rocBLAS 79.1%，K2 INT4 5.4% |
+
+瓶頸結論：
+
+- unfused_INT4 主要耗在 PyTorch reference Hadamard/quant/dequant、完整 paged-cache dequant，以及每 token 約 1.1 萬次 dispatch。
+- fusion 後 K1/K3/FFN 各自低於約 1% kernel sum；主要成本轉為 QKV/O/MLP/LM-head GEMM、剩餘 elementwise/copy 與 host launch gap。
+- 長 context 時 K2 direct INT4 decode 占比提高；B=1,L=4096 約占 kernel sum 17.4%，但仍低於 rocBLAS projection/LM-head。
+- Stage event 插樁 overhead 為 22%-154%，因此 stage 表只作比例歸因；正式 latency使用無插樁 HIP events。
+- `SQ_WAVES_sum`、GRBM activity 有非零值；FetchSize、GL2C、LDS、MeanOccupancy在 gfx1201 仍全為 0，報告改用理論 minimum traffic與 trace resource欄位補充。
+
+Batch/context/variant 的完整 scaling 圖與 GEMM bound 分析已補入 `decode_bottleneck_profiling_report_zh.md`：
+
+- `decode_bottleneck_profiling_results/charts/latency_vs_context_by_batch.png`
+- `decode_bottleneck_profiling_results/charts/speedup_vs_context_by_batch.png`
+- `decode_bottleneck_profiling_results/charts/latency_vs_batch_by_context.png`
+- `decode_bottleneck_profiling_results/charts/rocprof_kernel_category_stacked.png`
+- `decode_bottleneck_profiling_results/charts/projection_gemm_roofline.png`
+
+Fused path 的 rocBLAS projection/LM-head 在目前 B=1-8 decode shape 判定為 **memory/weight-streaming bound**，不是 matrix compute-bound。32 層 projections 加 LM head 的 FP16 weight 最低約 `15.01 GB/token`；rocprof 三個代表點推估 effective weight bandwidth 約 `450.7-460.8 GB/s`，即 R9700 官方 `640 GB/s` 的 `70.4-72.0%`。B=1 到 B=4 時 algorithmic FLOPs 增加 4 倍，但 rocBLAS kernel sum 只由約 `32.57 ms` 變為 `33.30 ms`，顯示 batch 主要在攤提相同 weight stream。長 context 的 K2 direct INT4 decode 同樣偏 cache-memory-bound，其 kernel-time 占比在 B=1 由 L=128 的 `1.1%` 增至 L=4096 的 `17.4%`。
+
 ## 舊 Projection-Only Ablation 的定位
 
 早期 `profile_quarot_model_integration.py` 使用 projection 後 tensors 做 ablation，曾量到 `full_fused` 相對 projection-only `unfused_INT4` 約 `100x` event speedup。這個結果只代表 **projection 後 kernel path**，不包含 RMSNorm、QKV/O/FFN linear projection、residual 等 decoder layer 成本。
@@ -513,16 +618,18 @@ rocprofv3 representative trace：
 
 ## 目前缺少項目
 
-1. **Native Transformers integration**  
+INT4 coverage 的逐區塊架構稽核見 `int4_coverage_audit_zh.md`。目前 formal path 的精確定位是 FP16 HF weights/projections + INT4 KV cache + K3/FFN 短暫 INT4 round-trip，尚不是完整 W4A4KV4 QuaRot；尤其 K3/FFN packed output 仍會立即 dequant 後送入 FP16 `o_proj/down_proj`。
+
+1. **Native Transformers integration**
    目前已完成 formal token-by-token wrapper，`quarot_unfused` / `fused_quarot` 可透過 `prefill()`、`decode_one()`、wrapper `generate()` 執行。尚未完成的是直接 patch HF `LlamaAttention` / cache class / native `transformers.generate()`，讓一般 HuggingFace model object 不經 wrapper 也能使用 QuaRot paged KV cache + GQA decode。
 
-2. **完整 QuaRot 權重旋轉 / calibration / model conversion**  
+2. **完整 QuaRot 權重旋轉 / calibration / model conversion**
    已完成 FP16、QuaRot unfused、Fused QuaRot 的 logits/generation quality 比較；但 FP16 vs QuaRot 差異很大，表示目前還不是正式 QuaRot-converted Llama。下一步需接入真正的 QuaRot 權重旋轉、scale calibration、perplexity 或更大的 prompt set。
 
-3. **更長時間 profiling 與 production 統計**  
-   已完成 formal path B=`1,2,4,8`、L=`10,128,1024,4096`、repeats=`3`，並完成 B=1,L=128；B=1,L=4096；B=4,L=1024 三路徑 rocprofv3。正式發表前仍建議增加更長 iters/repeats、多 token decode generation、跨天重跑穩定性與更完整 top-kernel attribution。
+3. **Production serving 與跨日統計**
+   已完成 B=`1,2,4,8`、L=`10,128,1024,4096`、15 samples/shape/backend、32-token sequential decode，以及三個代表點的 decode-only rocprof/counter profiling。剩餘項目是跨日重跑、production scheduler/sampling/tokenization 與多使用者 serving trace。
 
-4. **硬體 counter 限制**  
+4. **硬體 counter 限制**
    `gfx1201` 上 GL2C/LDS/occupancy counter 仍無法取得有效數值，只能以 kernel time/calls/SQ waves 與理論 traffic 補充。
 
 ## Kernel Fusion 可行性評估
@@ -537,10 +644,11 @@ rocprofv3 representative trace：
 ## 結論
 
 1. 元件級 profiling 顯示 FFN/K1/K2/K3 fusion 都能顯著降低 unfused_INT4 path 的 kernel calls 與 kernel time；所有 speedup 均以 unfused_INT4 為 `1.00x`。
-2. Single decoder layer harness 顯示 fused QuaRot 相對 unfused_INT4 平均約 `6.36x` speedup；FP16 reference 相對 unfused_INT4 平均約 `5.17x`。
-3. Llama-3.1 8B formal token-by-token path 顯示 fused QuaRot 相對 unfused_INT4 約 `2.37-5.67x`；FP16 reference 相對 unfused_INT4 約 `2.61-4.19x`。
+2. Single decoder layer harness 顯示 fused QuaRot 相對 unfused_INT4 平均約 `6.36x` speedup；FP16 reference 僅作絕對 latency 參考。
+3. 最新 Llama-3.1 8B fixed-context formal path 顯示 fused_current 相對 unfused_INT4 約 `2.27-5.69x`、16-shape 平均 `2.88x`；FP16 reference 僅作絕對 ms/token 參考。
 4. Fused QuaRot 與 FP16 reference 的絕對 latency 是 shape-dependent：小 batch/context 多數接近或略慢，B=4,L=4096 與 B=8 長 context 下 fused QuaRot 絕對 latency 低於 FP16 reference。
-5. 目前結果不能外推成 full LLM end-to-end 100x speedup。較精準的說法是：**目前 fused kernels 可有效加速 QuaRot decode path 中 rotation/quant/dequant/INT4 decode 相關 overhead，但整體模型速度仍取決於 GEMM、projection、runtime scheduling、native HF generate 接線與完整 QuaRot model conversion。**
+5. hadacore256 backend 已完成 K3/FFN experimental wiring，但不建議取代 default current fused backend：component FFN 平均略快，K3 平均略慢，decoder full_fused 平均沒有明確改善。
+6. 目前結果不能外推成 full LLM end-to-end 100x speedup。較精準的說法是：**目前 fused kernels 可有效加速 QuaRot decode path 中 rotation/quant/dequant/INT4 decode 相關 overhead，但整體模型速度仍取決於 GEMM、projection、runtime scheduling、native HF generate 接線與完整 QuaRot model conversion。**
 
 ## Reproduce
 

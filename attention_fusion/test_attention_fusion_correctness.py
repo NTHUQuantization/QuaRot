@@ -8,6 +8,8 @@ from quarot_attention_fusion import (
     hadamard_reference,
     make_uniform_paged_kv_metadata,
     quantize_attention_output,
+    quantize_attention_output_hadacore256,
+    quantize_attention_output_hadacore4096_experimental,
     quantize_grouped_reference,
     quantize_s4_reference,
 )
@@ -80,6 +82,40 @@ def test_k3(rows):
     assert_close_enough(f"K3 rows={rows}", mismatch, ref_packed.numel(), 0.01, scale_err, 0.001)
 
 
+def test_k3_hadacore256(rows):
+    torch.manual_seed(300 + rows)
+    out = torch.randn((rows, 4096), device="cuda", dtype=torch.float16)
+    packed, scales = quantize_attention_output_hadacore256(out)
+    torch.cuda.synchronize()
+
+    ref_packed, ref_scales = quantize_grouped_reference(
+        hadamard_reference(out.reshape(rows, 16, 256)).reshape(rows, 4096),
+        256,
+    )
+    mismatch = (packed != ref_packed).sum().item()
+    scale_err = (scales.float() - ref_scales.float()).abs().max().item()
+    assert_close_enough(f"K3 hadacore256 rows={rows}", mismatch, ref_packed.numel(), 0.01, scale_err, 0.001)
+
+
+def test_k3_hadacore4096_experimental(rows):
+    torch.manual_seed(400 + rows)
+    out = torch.randn((rows, 4096), device="cuda", dtype=torch.float16)
+    packed, scales = quantize_attention_output_hadacore4096_experimental(out)
+    torch.cuda.synchronize()
+
+    ref_packed, ref_scales = quantize_grouped_reference(hadamard_reference(out), 256)
+    mismatch = (packed != ref_packed).sum().item()
+    scale_err = (scales.float() - ref_scales.float()).abs().max().item()
+    assert_close_enough(
+        f"K3 hadacore4096 experimental rows={rows}",
+        mismatch,
+        ref_packed.numel(),
+        0.01,
+        scale_err,
+        0.001,
+    )
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--batch", type=int, default=1)
@@ -93,9 +129,10 @@ def main():
     test_k1(args.batch, args.heads, args.seq_len, args.page_size, True)
     for rows in [int(x) for x in args.k3_rows.replace(",", " ").split()]:
         test_k3(rows)
+        test_k3_hadacore256(rows)
+        test_k3_hadacore4096_experimental(rows)
     print("attention fusion correctness: PASS")
 
 
 if __name__ == "__main__":
     main()
-

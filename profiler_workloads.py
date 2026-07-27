@@ -71,27 +71,36 @@ def apply_rope_k(k, pos, theta=10000.0):
     return torch.stack((y0, y1), dim=-1).reshape_as(k).half()
 
 
-def run_ffn_unfused(iters):
-    gate = seeded_half((1, 14336), 0.01)
-    up = seeded_half((1, 14336), 0.013)
+def run_ffn_unfused(iters, rows=1, cols=14336):
+    gate = seeded_half((rows, cols), 0.01)
+    up = seeded_half((rows, cols), 0.013)
     for _ in range(iters):
         x = F.silu(gate.float()) * up.float()
-        h = hadamard_torch(x.reshape(1, 56, 256)).reshape_as(x)
+        h = hadamard_torch(x.reshape(rows, cols // 256, 256)).reshape_as(x)
         quantize_grouped(h, 256)
 
 
-def run_ffn_fused(iters):
-    gate = seeded_half((1, 14336), 0.01)
-    up = seeded_half((1, 14336), 0.013)
+def run_ffn_fused(iters, rows=1, cols=14336):
+    gate = seeded_half((rows, cols), 0.01)
+    up = seeded_half((rows, cols), 0.013)
     packed = None
     for _ in range(iters):
         packed = ffn_fusion_hip.fused_ffn_silu_hadamard_quant(gate, up, 256)
     return packed
 
 
-def run_ffn_hadacore(iters):
-    gate = seeded_half((1, 14336), 0.01)
-    up = seeded_half((1, 14336), 0.013)
+def run_ffn_hadacore256_fused(iters, rows=1, cols=14336):
+    gate = seeded_half((rows, cols), 0.01)
+    up = seeded_half((rows, cols), 0.013)
+    packed = None
+    for _ in range(iters):
+        packed = ffn_fusion_hip.fused_ffn_silu_hadamard_quant_hadacore256(gate, up)
+    return packed
+
+
+def run_ffn_hadacore_pipeline_reference(iters, rows=1, cols=14336):
+    gate = seeded_half((rows, cols), 0.01)
+    up = seeded_half((rows, cols), 0.013)
     for _ in range(iters):
         x = (F.silu(gate.float()) * up.float()).half()
         h = hadacore(x.reshape(-1, 256).contiguous(), 1.0 / math.sqrt(256)).reshape_as(x)
@@ -199,18 +208,30 @@ def run_k1_unfused(iters, rope):
         param[page, 0, 1, :, entry, :] = v_param[0]
 
 
-def run_k3(iters):
-    out = seeded_half((1, 4096), 0.011)
-    packed = torch.empty((1, 2048), device="cuda", dtype=torch.uint8)
-    scales = torch.empty((1, 16), device="cuda", dtype=torch.float16)
+def run_k3(iters, rows=1):
+    out = seeded_half((rows, 4096), 0.011)
+    packed = torch.empty((rows, 2048), device="cuda", dtype=torch.uint8)
+    scales = torch.empty((rows, 16), device="cuda", dtype=torch.float16)
     for _ in range(iters):
         attention_fusion_hip.output_had_quant_inplace(out, packed, scales)
 
 
-def run_k3_unfused(iters):
-    out = seeded_half((1, 4096), 0.011)
+def run_k3_hadacore256(iters, rows=1):
+    out = seeded_half((rows, 4096), 0.011)
     for _ in range(iters):
-        h = hadamard_torch(out.reshape(1, 16, 256)).reshape_as(out)
+        attention_fusion_hip.output_had_quant_hadacore256(out)
+
+
+def run_k3_hadacore4096_experimental(iters, rows=1):
+    out = seeded_half((rows, 4096), 0.011)
+    for _ in range(iters):
+        attention_fusion_hip.output_had_quant_hadacore4096_experimental(out)
+
+
+def run_k3_unfused(iters, rows=1):
+    out = seeded_half((rows, 4096), 0.011)
+    for _ in range(iters):
+        h = hadamard_torch(out.reshape(rows, 16, 256)).reshape_as(out)
         quantize_grouped(h, 256)
 
 
@@ -218,13 +239,19 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("workload")
     parser.add_argument("--iters", type=int, default=20)
+    parser.add_argument("--rows", type=int, default=1)
+    parser.add_argument("--cols", type=int, default=14336)
     args = parser.parse_args()
     torch.manual_seed(0)
 
     workloads = {
-        "ffn_unfused": run_ffn_unfused,
-        "ffn_hadacore": run_ffn_hadacore,
-        "ffn_fused": run_ffn_fused,
+        "ffn_unfused": lambda iters: run_ffn_unfused(iters, args.rows, args.cols),
+        "ffn_unfused_INT4": lambda iters: run_ffn_unfused(iters, args.rows, args.cols),
+        "ffn_hadacore": lambda iters: run_ffn_hadacore_pipeline_reference(iters, args.rows, args.cols),
+        "ffn_hadacore_pipeline_reference": lambda iters: run_ffn_hadacore_pipeline_reference(iters, args.rows, args.cols),
+        "ffn_fused": lambda iters: run_ffn_fused(iters, args.rows, args.cols),
+        "ffn_current_fused": lambda iters: run_ffn_fused(iters, args.rows, args.cols),
+        "ffn_hadacore256_fused": lambda iters: run_ffn_hadacore256_fused(iters, args.rows, args.cols),
         "k1_unfused_no_rope": lambda iters: run_k1_unfused(iters, False),
         "k1_unfused_rope": lambda iters: run_k1_unfused(iters, True),
         "k1_no_rope": lambda iters: run_k1(iters, False),
@@ -232,8 +259,12 @@ def main():
         "k2_f16": run_k2_f16,
         "k2_quarot_unfused": run_k2_quarot_unfused,
         "k2_i4": run_k2_i4,
-        "k3_unfused": run_k3_unfused,
-        "k3": run_k3,
+        "k3_unfused": lambda iters: run_k3_unfused(iters, args.rows),
+        "k3_unfused_INT4": lambda iters: run_k3_unfused(iters, args.rows),
+        "k3": lambda iters: run_k3(iters, args.rows),
+        "k3_current_fused": lambda iters: run_k3(iters, args.rows),
+        "k3_hadacore256_fused": lambda iters: run_k3_hadacore256(iters, args.rows),
+        "k3_hadacore4096_experimental": lambda iters: run_k3_hadacore4096_experimental(iters, args.rows),
     }
     workloads[args.workload](args.iters)
     torch.cuda.synchronize()

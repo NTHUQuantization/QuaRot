@@ -55,7 +55,7 @@ def benchmark_mode(model, tokenizer, args, out_dir):
     stat_rows = []
     prompts = load_prompts(args.prompts)
     prompt = prompts[0]
-    wrapper = wrap_model(model, args.mode)
+    wrapper = wrap_model(model, args.mode, fusion_backend=args.fusion_backend)
     for batch in parse_ints(args.batches):
         for context_len in parse_ints(args.context_lengths):
             inputs = make_inputs(tokenizer, prompt, batch, context_len, args.device)
@@ -90,6 +90,7 @@ def benchmark_mode(model, tokenizer, args, out_dir):
                 decode_ms_repeats.append(decode_ms)
                 rows.append({
                     "mode": args.mode,
+                    "fusion_backend": args.fusion_backend if args.mode == "fused_quarot" else "none",
                     "batch": batch,
                     "context_len": context_len,
                     "repeat": repeat,
@@ -101,6 +102,7 @@ def benchmark_mode(model, tokenizer, args, out_dir):
                 s = summarize(values)
                 stat_rows.append({
                     "mode": args.mode,
+                    "fusion_backend": args.fusion_backend if args.mode == "fused_quarot" else "none",
                     "batch": batch,
                     "context_len": context_len,
                     "metric": name,
@@ -114,6 +116,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-id", default="meta-llama/Llama-3.1-8B")
     parser.add_argument("--mode", choices=["fp16_hf", "quarot_unfused", "fused_quarot"], default="fp16_hf")
+    parser.add_argument("--fusion-backend", choices=["current", "hadacore256"], default="current")
     parser.add_argument("--out-dir", default="llama31_full_model_results")
     parser.add_argument("--prompts", default=None)
     parser.add_argument("--batches", default="1,2,4")

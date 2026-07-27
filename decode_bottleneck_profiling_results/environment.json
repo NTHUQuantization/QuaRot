@@ -1,0 +1,23 @@
+{
+  "platform": "Linux-6.8.0-94-generic-x86_64-with-glibc2.35",
+  "profile_date": "2026-07-14",
+  "python": "3.10.12",
+  "torch": "2.9.1+git5bc97ba",
+  "hip": "7.2.26015-fc0010cf6a",
+  "device": "gfx1201",
+  "device_properties": "_CudaDeviceProperties(name='', major=12, minor=0, gcnArchName='gfx1201', total_memory=32624MB, multi_processor_count=32, uuid=61636535-3637-6261-6161-623564633635, pci_bus_id=103, pci_device_id=0, pci_domain_id=0, L2_cache_size=8MB)",
+  "model": {
+    "hidden_size": 4096,
+    "intermediate_size": 14336,
+    "num_hidden_layers": 32,
+    "num_attention_heads": 32,
+    "num_key_value_heads": 8,
+    "head_dim": 128,
+    "vocab_size": 128256
+  },
+  "git_commit": "2418e7e0eea8c49a0b5c9b1a7a04733f32856fde",
+  "git_status_short": [
+    "58 modified/untracked entries; see git status --short"
+  ],
+  "hf_token_recorded": false
+}

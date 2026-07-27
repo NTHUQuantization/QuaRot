@@ -10,6 +10,7 @@ WORKLOADS = [
     ("FFN", "unfused PyTorch", "ffn_unfused", None, None, None),
     ("FFN", "hadacore pipeline", "ffn_hadacore", None, None, None),
     ("FFN", "fused prototype", "ffn_fused", "fused_ffn_silu_hadamard_quant_kernel", 64624, None),
+    ("FFN", "hadacore256 fused", "ffn_hadacore256_fused", "fused_ffn_silu_hadamard_quant_hadacore256_kernel", 64624, None),
     ("K1", "unfused PyTorch, RoPE off", "k1_unfused_no_rope", None, None, None),
     ("K1", "unfused PyTorch, RoPE on", "k1_unfused_rope", None, None, None),
     ("K1", "fused append, RoPE off", "k1_no_rope", "append_kv_had_quant_kernel", 5184, None),
@@ -19,6 +20,8 @@ WORKLOADS = [
     ("K2", "optimized INT4 KV decode", "k2_i4", "BatchDecodeWithPagedKVCacheKernel", 4456448, None),
     ("K3", "unfused PyTorch", "k3_unfused", None, None, None),
     ("K3", "fused output quant", "k3", "output_had_quant_kernel", 10272, None),
+    ("K3", "hadacore256 fused output quant", "k3_hadacore256_fused", "output_had_quant_hadacore256_kernel", 10272, None),
+    ("K3", "hadacore4096 experimental output quant", "k3_hadacore4096_experimental", "output_had_quant_hadacore4096_experimental_kernel", 10272, None),
 ]
 
 

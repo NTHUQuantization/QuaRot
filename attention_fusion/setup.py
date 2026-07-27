@@ -12,7 +12,12 @@ def split_arches(value):
 hip_arches = split_arches(os.environ.get("ATTN_FUSION_HIP_ARCHS", "gfx1201"))
 os.environ.setdefault("PYTORCH_ROCM_ARCH", ";".join(hip_arches))
 
-hip_flags = ["-O3", "-DHIP_ENABLE_WARP_SYNC_BUILTINS=1"]
+hip_flags = [
+    "-O3",
+    "-DHIP_ENABLE_WARP_SYNC_BUILTINS=1",
+    "-DHADACORE_ENABLE_EXPERIMENTAL_WMMA=1",
+    "-DHADACORE_FORCE_GFX12_WMMA=1",
+]
 hip_flags.extend(shlex.split(os.environ.get("ATTN_FUSION_HIP_EXTRA_FLAGS", "")))
 for arch in hip_arches:
     hip_flags.append(f"--offload-arch={arch}")

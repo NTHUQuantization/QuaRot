@@ -1,0 +1,2 @@
+variant,batch,context_len,iterations,total_ms,decode_ms_per_token
+unfused_INT4,1,4096,3,1905.776123046875,635.2587076822916

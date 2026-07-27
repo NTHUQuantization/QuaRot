@@ -1,0 +1,2 @@
+variant,batch,context_len,iterations,total_ms,decode_ms_per_token
+fused_hadacore256,1,128,3,435.18072509765625,145.06024169921875

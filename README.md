@@ -1,11 +1,14 @@
 # Build the Library
+
+整合 Llama-3.1 8B 的完整檔案配置、build、tensor contract、K1/K2/K3/FFN 插入位置與驗收方式，請先讀 [`FUSED_KERNEL_INTEGRATION_README_zh.md`](FUSED_KERNEL_INTEGRATION_README_zh.md)。
+
 ``` bash
 # Build
 python setup_flashinfer.py build_ext --inplace
 # Import (Currently fail)
 python -c "import flashinfer_test._HIP"
 # Only build flashinfer
-hipcc -c flashinfer.cu -I./include_hip -o flashinfer.o 
+hipcc -c flashinfer.cu -I./include_hip -o flashinfer.o
 ```
 
 # setup_flashinfer.py
