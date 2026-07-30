@@ -1,0 +1,12 @@
+# Install inside a ROCm-compatible PyTorch environment.
+# Do not replace the vendor-provided ROCm PyTorch wheel with a CPU/CUDA wheel.
+torch>=2.9.0
+
+# Llama-3.1 model loading and rotary-position helpers.
+transformers>=4.45.0
+
+# Decode-bottleneck and roofline report charts.
+matplotlib>=3.7.0
+
+# Required by the HIP extension build scripts.
+setuptools>=68.0.0
