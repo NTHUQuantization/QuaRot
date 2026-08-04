@@ -1,4 +1,5 @@
 import functools
+import os
 import quarot
 import quarot.transformers
 import torch
@@ -79,9 +80,14 @@ class QuarotFP16LlamaAttention(LlamaFlashAttention2):
         else:
             attn_output = cache_out(query_states)
 
-        attn_output = self.o_proj_hadamard(attn_output.transpose(-1, -2)).transpose(-1, -2)
-        attn_output = attn_output.reshape(bsz, q_len, self.hidden_size).contiguous()
-        attn_output = self.o_proj(attn_output)
+        if getattr(self, "_fused_attention_output", False):
+            packed, scales = quarot._HIP.fused_attention_hadamard_quant(
+                attn_output.contiguous(), self.num_heads)
+            attn_output = self.o_proj[1](quarot.PackedQuantizedTensor(packed, scales))
+        else:
+            attn_output = self.o_proj_hadamard(attn_output.transpose(-1, -2)).transpose(-1, -2)
+            attn_output = attn_output.reshape(bsz, q_len, self.hidden_size).contiguous()
+            attn_output = self.o_proj(attn_output)
 
         if not output_attentions:
             attn_weights = None
@@ -101,6 +107,11 @@ class QuarotLlamaAttention(QuarotFP16LlamaAttention):
             quarot.nn.Quantizer(),
             quarot.nn.Linear4bit.from_float(self.o_proj)
         )
+        self._fused_attention_output = (
+            self.num_heads > 0
+            and self.num_heads & (self.num_heads - 1) == 0
+            and self.hidden_size <= 8192
+        )
 
 class QuarotLlamaMLP(LlamaMLP):
     def __init__(self, *args, **kwargs):
@@ -113,10 +124,41 @@ class QuarotLlamaMLP(LlamaMLP):
             quarot.nn.Quantizer(),
             quarot.nn.Linear4bit.from_float(self.down_proj)
         )
+        hadamard = self.down_proj[0]
+        inner_width = self.intermediate_size // hadamard.rem_dim
+        self._fused_ffn_max_rows = int(
+            os.environ.get("QUAROT_FUSED_FFN_MAX_ROWS", "64"))
+        if self._fused_ffn_max_rows < 0:
+            raise ValueError("QUAROT_FUSED_FFN_MAX_ROWS must be non-negative")
+        self._fused_ffn = (
+            self.intermediate_size > 0
+            and self.intermediate_size % 2 == 0
+            and self.intermediate_size <= 14336
+            and inner_width > 0
+            and inner_width & (inner_width - 1) == 0
+        )
 
     def forward(self, x):
+        # The generalized remainder transform is a scalar matrix-vector loop
+        # per row. It wins for decode/short prompts by eliminating launches,
+        # while the unfused batched matmul is faster for long prefill.
+        rows = x.numel() // x.shape[-1]
+        use_fused_ffn = (
+            self._fused_ffn and rows <= self._fused_ffn_max_rows)
         x = self.quantizer(x)
-        return super().forward(x)
+        if not use_fused_ffn:
+            return super().forward(x)
+        gate = self.gate_proj(x)
+        up = self.up_proj(x)
+        hadamard = self.down_proj[0]
+        if hadamard.had_rem_dim is None:
+            packed, scales = quarot._HIP.fused_ffn_silu_hadamard_quant(
+                gate.contiguous(), up.contiguous())
+        else:
+            packed, scales = quarot._HIP.fused_ffn_silu_hadamard_quant_general(
+                gate.contiguous(), up.contiguous(),
+                hadamard.had_rem_dim.contiguous())
+        return self.down_proj[2](quarot.PackedQuantizedTensor(packed, scales))
 
 
 class QuarotFP16LlamaForCausalLM(LlamaForCausalLM):
@@ -133,7 +175,7 @@ class QuarotFP16LlamaForCausalLM(LlamaForCausalLM):
         device = self.model.layers[0].self_attn.v_proj.weight.device
         dtype = self.cache_dtype or self.model.layers[0].self_attn.v_proj.weight.dtype
         
-        num_heads = self.config.num_key_value_heads
+        num_heads = self.config.num_attention_heads
         model_dim = self.config.hidden_size
         head_dim = model_dim // num_heads
         disable_quant = self.cache_dtype == "float16" 
@@ -144,6 +186,7 @@ class QuarotFP16LlamaForCausalLM(LlamaForCausalLM):
             device=device, 
             n_layers=len(self.model.layers),
             num_heads=num_heads,
+            num_kv_heads=self.config.num_key_value_heads,
             head_dim=head_dim,
             disable_quant=disable_quant,
             hadamard_dtype=None if disable_quant else torch.float16

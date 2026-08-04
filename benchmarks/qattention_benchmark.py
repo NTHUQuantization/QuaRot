@@ -7,9 +7,10 @@ import time
 from quarot.transformers.kv_cache import MultiLayerPagedKVCache4Bit
 
 model_sizes = [
-    (32, 32, 128), #llama-7b
-    (40, 40, 128), #llama-13b
-    (80, 64, 128)  #llama-70b   
+    (32, 32, 32, 128), # Llama-2 7B: layers, Q heads, KV heads, head dim
+    (40, 40, 40, 128), # Llama-2 13B
+    (80, 64, 64, 128), # Llama-2 70B
+    (32, 32, 8, 128),  # representative GQA layout
 ]
 
 benchmark_dtypes = ["int4", torch.float16]
@@ -35,7 +36,7 @@ def module_benchmark(module):
     return (end_time - start_time) * 1000 / num_bench_steps, memory_usage
 
 def quantized_kv_cache_decode(
-    n_layers, num_heads, head_dim, 
+    n_layers, num_q_heads, num_kv_heads, head_dim,
     batch_size, dtype, seq_len, 
     hadamard_dtype=torch.float16):
     device = torch.device("cuda:0")
@@ -45,13 +46,14 @@ def quantized_kv_cache_decode(
         max_seq_len=seq_len, 
         device=device, 
         n_layers=n_layers, # Ignornig n_layers as it does not affect speed
-        num_heads=num_heads,
+        num_heads=num_q_heads,
+        num_kv_heads=num_kv_heads,
         head_dim=head_dim,
         disable_quant=dtype == torch.float16,
         hadamard_dtype=hadamard_dtype,
     )
-    query_states = torch.rand((batch_size, 1, num_heads, head_dim), device=device, dtype=torch.float16)
-    key_states = torch.rand((batch_size, 1, num_heads, head_dim), device=device, dtype=torch.float16)
+    query_states = torch.rand((batch_size, 1, num_q_heads, head_dim), device=device, dtype=torch.float16)
+    key_states = torch.rand((batch_size, 1, num_kv_heads, head_dim), device=device, dtype=torch.float16)
     value_states = torch.rand((batch_size, 1, num_heads, head_dim), device=device, dtype=torch.float16)
     def _fake_prefill_and_decode():
         cache._needs_init = [False] * len(cache._needs_init)
@@ -67,11 +69,9 @@ def quantized_kv_cache_decode(
 
 def qattention_benchmark(args):
     
-    for n_layers, num_heads, head_dim in model_sizes:
+    for n_layers, num_q_heads, num_kv_heads, head_dim in model_sizes:
         time_fp16, memory_fp16 = quantized_kv_cache_decode(
-            n_layers=n_layers,
-            num_heads=num_heads,
-            head_dim=head_dim,
+            n_layers=n_layers, num_q_heads=num_q_heads, num_kv_heads=num_kv_heads, head_dim=head_dim,
             batch_size=args.batch_size,
             dtype=torch.float16,
             seq_len=args.seq_len,
@@ -79,27 +79,21 @@ def qattention_benchmark(args):
         )
         
         time_int4, memory_int4 = quantized_kv_cache_decode(
-            n_layers=n_layers,
-            num_heads=num_heads,
-            head_dim=head_dim,
+            n_layers=n_layers, num_q_heads=num_q_heads, num_kv_heads=num_kv_heads, head_dim=head_dim,
             batch_size=args.batch_size,
             dtype="int4",
             seq_len=args.seq_len,
             hadamard_dtype=None
         )
         time_int4_hadfp16, _ = quantized_kv_cache_decode(
-            n_layers=n_layers,
-            num_heads=num_heads,
-            head_dim=head_dim,
+            n_layers=n_layers, num_q_heads=num_q_heads, num_kv_heads=num_kv_heads, head_dim=head_dim,
             batch_size=args.batch_size,
             dtype="int4",
             seq_len=args.seq_len,
             hadamard_dtype=torch.float16
         )
         time_int4_hadfp32, _ = quantized_kv_cache_decode(
-            n_layers=n_layers,
-            num_heads=num_heads,
-            head_dim=head_dim,
+            n_layers=n_layers, num_q_heads=num_q_heads, num_kv_heads=num_kv_heads, head_dim=head_dim,
             batch_size=args.batch_size,
             dtype="int4",
             seq_len=args.seq_len,
@@ -121,7 +115,7 @@ def qattention_benchmark(args):
         print(f"Memory Saving: {np.mean(memory_fp16) / np.mean(memory_int4):.3f}x")
         
         # table-style output
-        print(f'{n_layers}x{num_heads}x{head_dim} & {args.batch_size} & {np.mean(time_fp16):.3f} & {np.mean(time_int4):.3f} & {np.mean(time_int4_hadfp32):.3f} & {np.mean(time_int4_hadfp16):.3f}\\\\')
+        print(f'{n_layers}x{num_q_heads}/{num_kv_heads}x{head_dim} & {args.batch_size} & {np.mean(time_fp16):.3f} & {np.mean(time_int4):.3f} & {np.mean(time_int4_hadfp32):.3f} & {np.mean(time_int4_hadfp16):.3f}\\\\')
         print('--------------')
 
 if __name__ == '__main__':

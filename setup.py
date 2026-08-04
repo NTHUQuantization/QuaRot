@@ -7,7 +7,10 @@ import pathlib
 setup_dir = os.path.dirname(os.path.realpath(__file__))
 HERE = pathlib.Path(__file__).absolute().parent
 
-os.environ["PYTORCH_ROCM_ARCH"]="gfx1201"
+# ROCm/PyTorch selects the installed target by default.  Set
+# QUAROT_HIP_ARCHS (for example "gfx1100;gfx1201") only for cross-compiles.
+if os.environ.get("QUAROT_HIP_ARCHS"):
+    os.environ["PYTORCH_ROCM_ARCH"] = os.environ["QUAROT_HIP_ARCHS"]
 
 def remove_unwanted_pytorch_flags():
 
@@ -74,6 +77,7 @@ if __name__ == '__main__':
                     'quarot/kernels/gemm.hip',
                     'quarot/kernels/quant.hip',
                     'quarot/kernels/flashinfer.hip',
+                    'quarot/kernels/fused_hip.hip',
                 ],
                 include_dirs=[
                     os.path.join(setup_dir, 'quarot/kernels/include_hip'),
@@ -92,9 +96,10 @@ if __name__ == '__main__':
                         "-O3",
                         "-std=c++17",
                     ],
-                    "hipcc": [
+                    "nvcc": [
                         "-O3",
                         "--offload-arch=gfx1201",
+                        "-DQUAROT_BPRE_GFX12=1",
                         # PyTorch may add these after COMMON_HIP_FLAGS has
                         # been edited.  CK's half helpers require the HIP
                         # conversions, so undefine them at the end as well.

@@ -5,21 +5,21 @@ import numpy as np
 import torch
 import time
 
-from e2e.quantized_llama import modeling_llama
+from quantized_llama import modeling_llama
 import torch
 import transformers
 
 model_configs = [
-    "meta-llama/Llama-2-7b-hf",
-    # "meta-llama/Llama-2-13b-hf", 
-    # "meta-llama/Llama-2-70b-hf", 
+    # "meta-llama/Llama-2-7b-hf",
+     "meta-llama/Llama-2-13b-hf",
+    # "meta-llama/Llama-2-70b-hf",
 ]
 
 benchmark_dtypes = ["int4", torch.float16]
-num_warmup_steps = 0
-num_bench_steps = 1
+num_warmup_steps = 3
+num_bench_steps = 5
 
-def repeated_run(num_repeats=10):
+def repeated_run(num_repeats=3):
     def func(module):
         def _f(*args, **kwargs):
             times = []
@@ -38,15 +38,20 @@ def module_benchmark(module):
     # warmup
     for i in range(num_warmup_steps):
         out = module()
+        # Avoid retaining logits/KV caches while the next iteration runs.
+        del out
     torch.cuda.synchronize()
-    
-    _cleanup()
+
+    # Preserve allocator warm-up while collecting unreachable Python state.
+    gc.collect()
     torch.cuda.reset_max_memory_allocated()
     start_time = time.perf_counter()
-    
-    
+
+
     for i in range(num_bench_steps):
         out = module()
+        # Measured iterations are independent; outputs must not accumulate.
+        del out
     torch.cuda.synchronize()
     peak_memory = torch.cuda.max_memory_allocated()
 
@@ -62,7 +67,7 @@ def get_model_quantized(config_name):
     )
     dtype_old = torch.get_default_dtype()
     torch.set_default_dtype(torch.float16)
-    with transformers.modeling_utils.no_init_weights(): 
+    with transformers.modeling_utils.no_init_weights():
         model = modeling_llama.QuarotLlamaForCausalLM(config=config)
     torch.set_default_dtype(dtype_old)
     return model
@@ -70,15 +75,15 @@ def get_model_quantized(config_name):
 
 def get_model_hf(config_name):
     return transformers.LlamaForCausalLM.from_pretrained(
-        config_name, 
-        torch_dtype=torch.float16, 
+        config_name,
+        torch_dtype=torch.float16,
         attn_implementation="flash_attention_2"
     )
 
 def get_model_fp16(config_name):
     return modeling_llama.QuarotFP16LlamaForCausalLM.from_pretrained(
-        config_name, 
-        torch_dtype=torch.float16, 
+        config_name,
+        torch_dtype=torch.float16,
         attn_implementation="flash_attention_2"
     )
 
@@ -86,7 +91,7 @@ def get_model_fp16(config_name):
 def run_prefill(model, bsz, prefill_length):
     device = model.device
     test_input = torch.randint(100, 200, (bsz, prefill_length), dtype=torch.int32, device=device)
-    return module_benchmark(lambda: model(test_input))
+    return module_benchmark(lambda: model(test_input, use_cache=False))
 
 
 def run_decode(model, bsz, prefill_length, decode_steps):
@@ -103,7 +108,7 @@ def run_decode(model, bsz, prefill_length, decode_steps):
         for _ in range(decode_steps):
             model(next_input, past_key_values=past_key_values)
     return module_benchmark(_decode_for_multiple_steps)
-    
+
 
 def run_e2e(model, bsz, prefill_length, decode_steps):
     device = model.device
@@ -133,11 +138,11 @@ def run_all_for_model(model, bsz, prefill, decode):
         time_e2e, _ = run_e2e(model, bsz, prefill, decode)
         _cleanup()
     else:
-        time_decode = time_e2e = None
+        time_decode = time_e2e = memory_decode = None
     return time_prefill, time_decode, time_e2e, memory_decode
 
 def benchmark(args):
-    
+
     for config_name in model_configs:
         model = get_model_quantized(config_name)
         time_prefill_i4, time_decode_i4, time_e2e_i4, mem_i4 = run_all_for_model(
@@ -150,30 +155,31 @@ def benchmark(args):
         del model
         _cleanup()
 
+        print(f'{config_name} & {args.batch_size} & {args.prefill_seq_len}')
+        print('---------------------------------------------------------------------')
         print(f"Prefill Int4 time: {np.mean(time_prefill_i4):.3f} +- {1.96 * np.std(time_prefill_i4):.3f}ms")
         print(f"Prefill FP16 time: {np.mean(time_prefill_f16):.3f} +- {1.96 * np.std(time_prefill_f16):.3f}ms")
         print(f"Speedup: {np.mean(time_prefill_f16) / np.mean(time_prefill_i4):.3f}x")
-        print(f'Prefill & {config_name} & {args.batch_size} & {args.prefill_seq_len} & {np.mean(time_prefill_f16):.3f} & {np.mean(time_prefill_i4):.3f}\\\\')
 
         if args.decode_steps is not None:
+            print('---------------------------------------------------------------------')
             print(f"Decode Int4 time: {np.mean(time_decode_i4):.3f} +- {1.96 * np.std(time_decode_i4):.3f}ms")
             print(f"Decode FP16 time: {np.mean(time_decode_f16):.3f} +- {1.96 * np.std(time_decode_f16):.3f}ms")
             print(f"Speedup: {np.mean(time_decode_f16) / np.mean(time_decode_i4):.3f}x")
-            print(f'Decode & {config_name} & {args.batch_size} & {args.prefill_seq_len} & {args.decode_steps} & {np.mean(time_decode_f16):.3f} & {np.mean(time_decode_i4):.3f}\\\\')
 
+            print('---------------------------------------------------------------------')
             print(f"E2E Int4 time: {np.mean(time_e2e_i4):.3f} +- {1.96 * np.std(time_e2e_i4):.3f}ms")
             print(f"E2E FP16 time: {np.mean(time_e2e_f16):.3f} +- {1.96 * np.std(time_e2e_f16):.3f}ms")
             print(f"Speedup: {np.mean(time_e2e_f16) / np.mean(time_e2e_i4):.3f}x")
-            print(f'E2E & {config_name} & {args.batch_size} & {args.prefill_seq_len} & {args.decode_steps} & {np.mean(time_e2e_f16):.3f} & {np.mean(time_e2e_i4):.3f}\\\\')
-        
-        # table-style output
 
-        print(f"Int4 memory: {np.mean(mem_i4) / (1024 * 1024 * 1024):.3f}GB +- {1.96 * np.std(mem_i4):.3f}")
-        print(f"FP16 memory: {np.mean(mem_f16) / (1024 * 1024 * 1024):.3f}GB +- {1.96 * np.std(mem_f16):.3f}")
-        print(f"Memory saving: {np.mean(mem_f16) / np.mean(mem_i4):.3f}x")
-        print(f'Memory saving & {config_name} & {args.batch_size} & {args.prefill_seq_len} & {args.decode_steps} & {np.mean(mem_i4) / (1024 * 1024 * 1024):.3f}GB & {np.mean(mem_f16) / (1024 * 1024 * 1024):.3f}GB\\\\')
-        
-        print('--------------')
+        # table-style output
+        print('---------------------------------------------------------------------')
+        if mem_i4 is not None:
+            print(f"Int4 memory: {np.mean(mem_i4) / (1024 * 1024 * 1024):.3f}GB +- {1.96 * np.std(mem_i4):.3f}")
+            print(f"FP16 memory: {np.mean(mem_f16) / (1024 * 1024 * 1024):.3f}GB +- {1.96 * np.std(mem_f16):.3f}")
+            print(f"Memory saving: {np.mean(mem_f16) / np.mean(mem_i4):.3f}x")
+
+        print('---------------------------------------------------------------------')
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -194,7 +200,7 @@ if __name__ == '__main__':
         required=False,
         default=None,
     )
-    
+
     args = parser.parse_args()
     pprint.pprint(vars(args))
     benchmark(args)

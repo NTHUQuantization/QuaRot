@@ -35,21 +35,31 @@ def flatten_last_dim_and_return_shape(x: torch.Tensor):
 
 
 def matmul(A, B):
-    assert A.shape[-1] % 32 == 0, "A.shape[-1]: {} must be multiplication of 32".format(A.shape[-1])
+    assert A.shape[-1] % 32 == 0
+
     A, A_shape_excl_last = flatten_last_dim_and_return_shape(A)
     B, B_shape_excl_last = flatten_last_dim_and_return_shape(B)
-    return quarot._CUDA.matmul(A, B).view(*A_shape_excl_last, *B_shape_excl_last)
+
+    original_m = A.shape[0]
+    padded_m = (original_m + 15) // 16 * 16
+    if padded_m != original_m:
+        A = torch.nn.functional.pad(A, (0, 0, 0, padded_m - original_m))
+
+    result = _HIP.matmul(A.contiguous(), B.contiguous())
+    result = result[:original_m]
+
+    return result.view(*A_shape_excl_last, *B_shape_excl_last)
 
 def sym_quant(x, scale):
     assert x.dtype == scale.dtype == torch.float16
     x, x_shape_excl_last = flatten_last_dim_and_return_shape(x)
-    return quarot._CUDA.sym_quant(x, scale.view(-1)).view(*x_shape_excl_last, -1)
+    return quarot._HIP.sym_quant(x, scale.view(-1)).view(*x_shape_excl_last, -1)
 
 def sym_dequant(q, scale_row, scale_col, bits=32):
     assert q.dtype == torch.int32
     assert scale_row.dtype == scale_col.dtype == torch.float16
     q, q_shape_excl_last = flatten_last_dim_and_return_shape(q)
-    return quarot._CUDA.sym_dequant(q, scale_row.view(-1), scale_col, bits).view(*q_shape_excl_last, -1)
+    return quarot._HIP.sym_dequant(q, scale_row.view(-1), scale_col, bits).view(*q_shape_excl_last, -1)
 
 
 class PackedQuantizedTensor:

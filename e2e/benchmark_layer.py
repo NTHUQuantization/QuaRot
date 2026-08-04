@@ -55,8 +55,8 @@ def module_benchmark(module):
     return (end_time - start_time) * 1000 / num_bench_steps, peak_memory
 
 
-def _build_cache(batch_size, length, layer, disable_quant, num_key_value_heads, hidden_size, device):
-    num_heads = num_key_value_heads
+def _build_cache(batch_size, length, layer, disable_quant, num_attention_heads, num_key_value_heads, hidden_size, device):
+    num_heads = num_attention_heads
     model_dim = hidden_size
     head_dim = model_dim // num_heads
     return quarot.transformers.MultiLayerPagedKVCache4Bit(
@@ -66,6 +66,7 @@ def _build_cache(batch_size, length, layer, disable_quant, num_key_value_heads, 
         device=device, 
         n_layers=1,
         num_heads=num_heads,
+        num_kv_heads=num_key_value_heads,
         head_dim=head_dim,
         disable_quant=disable_quant,
         hadamard_dtype=None if disable_quant else torch.float16
@@ -84,6 +85,7 @@ def get_model_quantized(config_name):
         _build_cache, 
         disable_quant=False,
         device=torch.device("cuda:0"),
+        num_attention_heads=model.config.num_attention_heads,
         num_key_value_heads=model.config.num_key_value_heads,
         hidden_size=model.config.hidden_size,), model.config.hidden_size
 
@@ -105,6 +107,7 @@ def get_model_fp16(config_name):
         _build_cache, 
         disable_quant=True,
         device=torch.device("cuda:0"),
+        num_attention_heads=model.config.num_attention_heads,
         num_key_value_heads=model.config.num_key_value_heads,
         hidden_size=model.config.hidden_size,
     ), model.config.hidden_size

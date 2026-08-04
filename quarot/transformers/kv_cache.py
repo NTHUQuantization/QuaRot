@@ -58,6 +58,17 @@ def append_kv_i4(kv_data, kv_param,
         v, k_param, v_param,
         layer_idx)
 
+
+def fused_append_kv_i4(kv_data, kv_param,
+                       kv_indptr, kv_indices,
+                       last_page_offset, k, v,
+                       num_layers, layer_idx, num_heads,
+                       page_size, batch_size):
+    """Decode-only K/V path matching this package's asymmetric FlashInfer cache."""
+    return _HIP.fused_append_kv_i4(
+        kv_data, kv_param, kv_indptr, kv_indices, last_page_offset, k, v,
+        num_layers, layer_idx, num_heads, page_size, batch_size)
+
 def batch_decode_i4(o, q, kv_data, kv_param,
                kv_indptr, kv_indices,
                last_page_offset, layer_idx):
@@ -130,9 +141,19 @@ class _AttentionStub(object):
 class MultiLayerPagedKVCache4Bit(Cache):
     def __init__(
         self, batch_size, page_size, max_seq_len, 
-        device, n_layers, num_heads, head_dim, 
+        device, n_layers, num_heads, head_dim,
+        num_kv_heads=None,
         disable_quant=False, hadamard_dtype=torch.float16 ):
         self.page_size = page_size
+        self.n_layers = n_layers
+        self.num_q_heads = num_heads
+        self.num_kv_heads = num_heads if num_kv_heads is None else num_kv_heads
+        if self.num_q_heads % self.num_kv_heads != 0:
+            raise ValueError("num_attention_heads must be divisible by num_key_value_heads")
+        # FlashInfer in this target only has an MHA decode kernel.  Expand KV
+        # heads once on cache write for correct GQA mapping; this is retained as
+        # a compatibility fallback until a native GQA decode kernel is added.
+        self.cache_heads = self.num_q_heads
         # transformers.Cache exposes ``batch_size`` as a read-only property.
         # Store the value privately and expose it below so this cache keeps the
         # same public API without assigning to the base-class descriptor.
@@ -144,13 +165,13 @@ class MultiLayerPagedKVCache4Bit(Cache):
                 max_page_cnt * batch_size, 
                 n_layers, 
                 2, 
-                num_heads, 
+                self.cache_heads,
                 page_size, 
                 head_dim if disable_quant else head_dim // 2 
             ), 
             dtype=torch.float16 if disable_quant else torch.uint8, device=device)
         
-        self.scales = torch.empty((max_page_cnt * batch_size, n_layers, 2, num_heads, page_size,  2), dtype=torch.float16, device=device)
+        self.scales = torch.empty((max_page_cnt * batch_size, n_layers, 2, self.cache_heads, page_size, 2), dtype=torch.float16, device=device)
         self.page_size = page_size
         self.max_seq_len = max_seq_len
         self._needs_init = [True] * n_layers
@@ -188,14 +209,30 @@ class MultiLayerPagedKVCache4Bit(Cache):
     ):
         
         b_sz, added_length, num_heads, head_dim = key_states.shape
+        if num_heads != self.num_kv_heads:
+            raise ValueError("KV tensor head count does not match cache configuration")
 
         orig_key_states = key_states
         orig_value_states = value_states
 
-        if self.hadamard_dtype is not None:
+        if self.cache_heads != num_heads:
+            repeats = self.cache_heads // num_heads
+            key_states = key_states.repeat_interleave(repeats, dim=2)
+            value_states = value_states.repeat_interleave(repeats, dim=2)
+            num_heads = self.cache_heads
+
+        use_fused_append = (
+            not self.disable_quant and not self._needs_init[layer_idx] and added_length == 1
+        )
+
+        if not use_fused_append and self.hadamard_dtype is not None:
             key_states = matmul_had_HIP(key_states, dtype=self.hadamard_dtype)
 
-        if self.disable_quant:
+        if use_fused_append:
+            # The HIP kernel applies the exact head-wise Hadamard, target-cache
+            # asymmetric quantization, and writes directly to the selected page.
+            pass
+        elif self.disable_quant:
             k_scale = key_states.new_ones((b_sz, added_length, num_heads, 1))
             k_zero = key_states.new_zeros((b_sz, added_length, num_heads, 1))
             v_scale = value_states.new_ones((b_sz, added_length, num_heads, 1))
@@ -204,8 +241,9 @@ class MultiLayerPagedKVCache4Bit(Cache):
             key_states, k_scale, k_zero = asym_quantize_and_pack_i4(key_states)
             value_states, v_scale, v_zero = asym_quantize_and_pack_i4(value_states)
         
-        k_param = torch.cat([k_scale, k_zero], dim=-1).view(self.batch_size * added_length, num_heads, 2)
-        v_param = torch.cat([v_scale, v_zero], dim=-1).view(self.batch_size * added_length, num_heads, 2)     
+        if not use_fused_append:
+            k_param = torch.cat([k_scale, k_zero], dim=-1).view(self.batch_size * added_length, num_heads, 2)
+            v_param = torch.cat([v_scale, v_zero], dim=-1).view(self.batch_size * added_length, num_heads, 2)
 
         quantized_head_dim = self.pages.shape[-1]
 
@@ -247,15 +285,24 @@ class MultiLayerPagedKVCache4Bit(Cache):
             return orig_key_states, orig_value_states
         else:
             assert added_length == 1
-            append_kv = append_kv_f16 if self.disable_quant else append_kv_i4
-            append_kv(
-                **self.get_cache_specs_for_flash_infer(attention_mask),
-                k=key_states.view(self.batch_size, num_heads, quantized_head_dim), 
-                v=value_states.view(self.batch_size, num_heads, quantized_head_dim), 
-                k_param=k_param.view(-1, num_heads, 2), 
-                v_param=v_param.view(-1, num_heads, 2),
-                layer_idx=layer_idx,
-            )
+            specs = self.get_cache_specs_for_flash_infer(attention_mask)
+            if use_fused_append:
+                fused_append_kv_i4(
+                    **specs, k=key_states.view(self.batch_size, num_heads, head_dim),
+                    v=value_states.view(self.batch_size, num_heads, head_dim),
+                    num_layers=self.n_layers, layer_idx=layer_idx, num_heads=num_heads,
+                    page_size=self.page_size, batch_size=self.batch_size,
+                )
+            else:
+                append_kv = append_kv_f16 if self.disable_quant else append_kv_i4
+                append_kv(
+                    **specs,
+                    k=key_states.view(self.batch_size, num_heads, quantized_head_dim),
+                    v=value_states.view(self.batch_size, num_heads, quantized_head_dim),
+                    k_param=k_param.view(-1, num_heads, 2),
+                    v_param=v_param.view(-1, num_heads, 2),
+                    layer_idx=layer_idx,
+                )
         return functools.partial(
             self._stub.forward, 
             num_kv_heads=num_heads,

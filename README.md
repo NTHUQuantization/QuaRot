@@ -9,20 +9,47 @@ We introduce QuaRot, a new **Qua**ntization scheme based on **Rot**ations, which
 
 ![Your Image](img/fig1.png)
 
-## Usage
-
-
-Compile the QuaRot kernels using the following commands:
+### Clone and install
 
 ```bash
-git clone https://github.com/spcl/QuaRot.git
-cd QuaRot
-pip install -e .  # or pip install .
+git clone https://github.com/NTHUQuantization/QuaRot.git
 ```
 
-For simulation results, check [fake_quant](https://github.com/spcl/QuaRot/tree/main/fake_quant) directory.
+download composable kernel
+```bash
+cd ~/QuaRot/third-party
+git clone --depth 1 --filter=blob:none --sparse \
+  --branch develop \
+  https://github.com/ROCm/rocm-libraries.git \
+  rocm-libraries
 
+cd rocm-libraries
 
+git sparse-checkout set projects/composablekernel
+```
+download hadmard transform
+
+build 
+```bash
+python -m pip install -r requirements.txt
+
+# Build fast_hadamard_transform .
+python -m pip install -e third-party/hadacore --no-build-isolation -v
+
+# Build the QuaRot C++/HIP extension .
+python -m pip install -e . --no-build-isolation -v
+```
+
+## Running benchmark
+
+```bash
+python e2e/benchmark.py \
+    --batch_size 1 \
+    --prefill_seq_len 512 \
+    --decode_steps 128
+```
+
+For simulation-only experiments, see the [fake_quant](fake_quant) directory.
 
 ### Star History
 

@@ -4,6 +4,7 @@
 #include <gemm.h>
 #include <quant.h>
 #include <flashinfer.h>
+#include <fused.h>
 
 
 torch::Tensor matmul(const torch::Tensor &A, const torch::Tensor &B)
@@ -417,5 +418,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m
     m.def("batch_decode_f16", &batch_decode_f16, "");
     m.def("init_kv_f16", &init_kv_f16, "");
     m.def("append_kv_f16", &append_kv_f16, ""); 
+    m.def("fused_append_kv_i4", &fused_append_kv_i4, "Fused Hadamard, asymmetric INT4 quantization, and paged KV-cache append");
+    m.def("fused_attention_hadamard_quant", &fused_attention_hadamard_quant, "Fused attention-output Hadamard and signed INT4 quantization");
+    m.def("fused_ffn_silu_hadamard_quant", &fused_ffn_silu_hadamard_quant, "Fused SiLU, FFN Hadamard, and signed INT4 quantization");
+    m.def("fused_ffn_silu_hadamard_quant_general", &fused_ffn_silu_hadamard_quant_general,
+          "Fused SiLU, generalized FFN Hadamard, and signed INT4 quantization");
 
 }
