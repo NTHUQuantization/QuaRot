@@ -1,0 +1,6 @@
+# Keep PARD isolated from the Transformers version used by the existing QuaRot path.
+transformers==4.51.3
+huggingface-hub>=0.30.0,<1.0
+tokenizers>=0.21.0,<0.22.0
+safetensors>=0.4.3
+numpy==1.26.4

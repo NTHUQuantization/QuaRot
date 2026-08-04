@@ -1,0 +1,78 @@
+{
+  "device": "AMD Radeon AI PRO R9700",
+  "tokens": 128,
+  "w4": {
+    "prefill_ms": 1449.023134977324,
+    "decode_total_ms": 367.6701780059375,
+    "decode_ms_per_token": 22.979386125371093,
+    "generated_ids": [
+      10484,
+      2065,
+      1493,
+      11,
+      6666,
+      6636,
+      6932,
+      11,
+      323,
+      66836,
+      23751,
+      13,
+      578,
+      1887,
+      1288,
+      1934
+    ],
+    "memory": {
+      "allocated_bytes": 4191421440,
+      "reserved_bytes": 4301258752,
+      "peak_allocated_bytes": 4256575488,
+      "peak_reserved_bytes": 4301258752
+    }
+  },
+  "hf_fp16": {
+    "prefill_ms": 907.3912820022088,
+    "decode_total_ms": 754.4752010144293,
+    "decode_ms_per_token": 47.15470006340183,
+    "generated_ids": [
+      10484,
+      2065,
+      1493,
+      11,
+      6666,
+      6636,
+      6932,
+      11,
+      323,
+      66836,
+      23751,
+      13,
+      578,
+      1887,
+      1288,
+      1934
+    ],
+    "memory": {
+      "allocated_bytes": 18289751552,
+      "reserved_bytes": 18339594240,
+      "peak_allocated_bytes": 18311805952,
+      "peak_reserved_bytes": 18339594240
+    }
+  },
+  "quality": {
+    "sample_tokens": 127,
+    "w4_cross_entropy": 1.657322883605957,
+    "hf_cross_entropy": 1.5517468452453613,
+    "w4_ppl": 5.245249886971599,
+    "hf_ppl": 4.7197075845163745,
+    "ppl_ratio": 1.111350606588284,
+    "logits_relative_l2": 0.4750306010246277,
+    "teacher_forced_top1_agreement": 0.8976377844810486,
+    "greedy_prefix_match": 16
+  },
+  "ratios": {
+    "decode_speedup_w4_over_hf": 2.0520435056939683,
+    "prefill_speedup_w4_over_hf": 0.6262089680275593,
+    "peak_allocated_ratio_w4_over_hf": 0.23244979218093453
+  }
+}

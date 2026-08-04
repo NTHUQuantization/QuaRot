@@ -1,0 +1,160 @@
+{
+  "schema_version": 1,
+  "upstream_commit": "6f279bf3f1680e0b5d71c562ca5b91bdeef4c038",
+  "phase": "smoke",
+  "mode": "pard",
+  "runtime_kind": "quarot_w4a4kv4",
+  "w4a4_checkpoint": "/user/undergraduate/wfching25/HIP_Fusion/QuaRot/artifacts/llama31-8b-quarot-rtn-w4a4kv4",
+  "target_key": "base",
+  "target": {
+    "model_id": "meta-llama/Llama-3.1-8B",
+    "revision": "d04e592bb4f6aa9cfee91e2e20afa771667e1d4b"
+  },
+  "draft": {
+    "model_id": "amd/PARD-Llama-3.2-1B",
+    "revision": "f7fbf130e2569268b054ffa2234303070ae82f9b"
+  },
+  "draft_k": 4,
+  "context_len": 128,
+  "max_new_tokens": 16,
+  "warmups": 0,
+  "repeat_count": 1,
+  "compile_mode": "eager",
+  "attention_implementation": "sdpa",
+  "dtype": "w4a4kv4-fp16-acc32",
+  "stop_on_eos": false,
+  "compatibility": {
+    "compatible": true,
+    "mode": "pard",
+    "reason": "configuration compatibility checks passed",
+    "target_vocab_size": 128256,
+    "draft_vocab_size": 128256,
+    "pard_token": 128020
+  },
+  "environment": {
+    "python": "3.10.12",
+    "platform": "Linux-6.8.0-136-generic-x86_64-with-glibc2.35",
+    "torch": "2.9.1+rocm7.2.1.gitff65f5bc",
+    "torch_hip": "7.2.53211-e1a6bc5663",
+    "transformers": "4.45.2",
+    "device": "AMD Radeon AI PRO R9700",
+    "device_total_memory": 34208743424
+  },
+  "parameter_bytes": {
+    "target": 4140466176,
+    "draft": 2471628800
+  },
+  "load_memory": [
+    {
+      "phase": "before_model_load",
+      "allocated_bytes": 4148690944,
+      "reserved_bytes": 4171235328,
+      "peak_allocated_bytes": 4148690944,
+      "peak_reserved_bytes": 4171235328,
+      "gpu_free_bytes": 29815209984,
+      "gpu_total_bytes": 34208743424,
+      "gpu_used_global_bytes": 4393533440,
+      "host_rss_bytes": 996278272
+    },
+    {
+      "phase": "target_loaded",
+      "allocated_bytes": 4148690944,
+      "reserved_bytes": 4171235328,
+      "peak_allocated_bytes": 4148690944,
+      "peak_reserved_bytes": 4171235328,
+      "gpu_free_bytes": 29815209984,
+      "gpu_total_bytes": 34208743424,
+      "gpu_used_global_bytes": 4393533440,
+      "host_rss_bytes": 996278272
+    },
+    {
+      "phase": "draft_loaded",
+      "allocated_bytes": 6621377024,
+      "reserved_bytes": 6643777536,
+      "peak_allocated_bytes": 6621377024,
+      "peak_reserved_bytes": 6643777536,
+      "gpu_free_bytes": 27342667776,
+      "gpu_total_bytes": 34208743424,
+      "gpu_used_global_bytes": 6866075648,
+      "host_rss_bytes": 999817216
+    }
+  ],
+  "repeats": [
+    {
+      "repeat": 0,
+      "generated_tokens": 16,
+      "first_step_tokens": 1,
+      "steady_generated_tokens": 15,
+      "ttft_ms": 12848.275605996605,
+      "steady_decode_ms": 4690.442738006823,
+      "steady_ms_per_token": 312.6961825337882,
+      "steady_tokens_per_s": 3.197992351224005,
+      "total_ms": 17538.718344003428,
+      "end_to_end_tokens_per_s": 0.912267343951645,
+      "target_forwards": 5,
+      "draft_forwards": 4,
+      "proposed_draft_tokens": 16,
+      "accepted_draft_tokens": 12,
+      "draft_acceptance_rate": 0.75,
+      "verifier_steps": 4,
+      "mean_emitted_tokens_per_step": 4.0,
+      "output_ids": [
+        90106,
+        4221,
+        29344,
+        45478,
+        7612,
+        16994,
+        2585,
+        315,
+        6636,
+        6932,
+        11,
+        5044,
+        9629,
+        11,
+        85356,
+        11
+      ],
+      "memory": [
+        {
+          "phase": "cache_initialized",
+          "allocated_bytes": 6627276288,
+          "reserved_bytes": 6650068992,
+          "peak_allocated_bytes": 6627644928,
+          "peak_reserved_bytes": 6650068992,
+          "gpu_free_bytes": 27334279168,
+          "gpu_total_bytes": 34208743424,
+          "gpu_used_global_bytes": 6874464256,
+          "host_rss_bytes": 1081581568
+        },
+        {
+          "phase": "decode_peak",
+          "allocated_bytes": 6721820160,
+          "reserved_bytes": 6899630080,
+          "peak_allocated_bytes": 6817488384,
+          "peak_reserved_bytes": 6899630080,
+          "gpu_free_bytes": 26835156992,
+          "gpu_total_bytes": 34208743424,
+          "gpu_used_global_bytes": 7373586432,
+          "host_rss_bytes": 1614073856
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "steady_tokens_per_s_median": 3.197992351224005,
+    "steady_tokens_per_s_mean": 3.197992351224005,
+    "final_memory": {
+      "phase": "result_write",
+      "allocated_bytes": 6701069824,
+      "reserved_bytes": 6899630080,
+      "peak_allocated_bytes": 6817488384,
+      "peak_reserved_bytes": 6899630080,
+      "gpu_free_bytes": 26835156992,
+      "gpu_total_bytes": 34208743424,
+      "gpu_used_global_bytes": 7373586432,
+      "host_rss_bytes": 1614143488
+    }
+  }
+}

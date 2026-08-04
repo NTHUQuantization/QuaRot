@@ -2,6 +2,20 @@
 
 整合 Llama-3.1 8B 的完整檔案配置、build、tensor contract、K1/K2/K3/FFN 插入位置與驗收方式，請先讀 [`FUSED_KERNEL_INTEGRATION_README_zh.md`](FUSED_KERNEL_INTEGRATION_README_zh.md)。
 
+## PARD / PARD2 decode 評估
+
+獨立的 Llama 3.1 speculative decoding harness 位於
+[`pard_benchmark/`](pard_benchmark/README_zh.md)。它比較相同 BF16 target 的
+AR、PARD、PARD2-TI 與 PARD2-TD，記錄 exact token parity、TTFT、steady decode、
+接受率與 GPU/host memory；不會修改目前 QuaRot 單 token wrapper。
+
+```bash
+cp .hf_env.example .hf_env  # 僅在 gated target 需要 token 時填寫
+./run_pard_benchmark.sh --phase smoke
+```
+
+runner 會先檢查外部 VRAM 佔用；GPU 忙碌時安全停止，不會終止其他程序。
+
 ``` bash
 # Build
 python setup_flashinfer.py build_ext --inplace

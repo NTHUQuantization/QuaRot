@@ -4,6 +4,8 @@ __pycache__/
 
 # Local secrets / caches
 .hf_env
+.venv-pard/
+.pard_compile_cache/
 
 # Generated smoke/workload scratch outputs
 *smoke*/
@@ -11,3 +13,13 @@ __pycache__/
 
 # Large rocprof raw traces; keep summaries/stats instead.
 *_kernel_trace.csv
+.rocprofv3/
+decode_bottleneck_profiling_results/rocprof/
+
+# Generated benchmark output and packed model checkpoints.
+pard_decode_results/
+artifacts/llama31-8b-quarot-rtn-w4a4kv4/
+
+# Native extension build products.
+w4a4_kernels/build/
+w4a4_kernels/*.so

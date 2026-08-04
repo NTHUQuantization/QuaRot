@@ -1,0 +1,4 @@
+# Copy this file to .hf_env and fill the token only when a gated model needs it.
+# .hf_env is ignored by Git. Never pass the token as a command-line argument.
+HF_TOKEN=
+HF_HOME=/workspace/HIP_Fusion/.hf_cache/pard

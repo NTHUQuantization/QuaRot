@@ -1,0 +1,146 @@
+{
+  "schema_version": 1,
+  "upstream_commit": "6f279bf3f1680e0b5d71c562ca5b91bdeef4c038",
+  "phase": "smoke",
+  "mode": "ar",
+  "runtime_kind": "quarot_w4a4kv4",
+  "w4a4_checkpoint": "/user/undergraduate/wfching25/HIP_Fusion/QuaRot/artifacts/llama31-8b-quarot-rtn-w4a4kv4",
+  "target_key": "base",
+  "target": {
+    "model_id": "/user/undergraduate/wfching25/HIP_Fusion/.hf_cache/hub/models--meta-llama--Llama-3.1-8B/snapshots/d04e592bb4f6aa9cfee91e2e20afa771667e1d4b",
+    "revision": "d04e592bb4f6aa9cfee91e2e20afa771667e1d4b"
+  },
+  "draft": null,
+  "draft_k": 1,
+  "context_len": 128,
+  "max_new_tokens": 16,
+  "warmups": 0,
+  "repeat_count": 1,
+  "compile_mode": "eager",
+  "attention_implementation": "sdpa",
+  "dtype": "w4a4kv4-fp16-acc32",
+  "stop_on_eos": false,
+  "compatibility": {
+    "compatible": true,
+    "mode": "ar",
+    "reason": "target-only autoregressive baseline",
+    "target_vocab_size": 128256,
+    "draft_vocab_size": null,
+    "pard_token": null
+  },
+  "environment": {
+    "python": "3.10.12",
+    "platform": "Linux-6.8.0-136-generic-x86_64-with-glibc2.35",
+    "torch": "2.9.1+rocm7.2.1.gitff65f5bc",
+    "torch_hip": "7.2.53211-e1a6bc5663",
+    "transformers": "4.45.2",
+    "device": "AMD Radeon AI PRO R9700",
+    "device_total_memory": 34208743424
+  },
+  "parameter_bytes": {
+    "target": 4140466176,
+    "draft": 0
+  },
+  "load_memory": [
+    {
+      "phase": "before_model_load",
+      "allocated_bytes": 4149215232,
+      "reserved_bytes": 4154458112,
+      "peak_allocated_bytes": 4149215232,
+      "peak_reserved_bytes": 4154458112,
+      "gpu_free_bytes": 3059744768,
+      "gpu_total_bytes": 34208743424,
+      "gpu_used_global_bytes": 31148998656,
+      "host_rss_bytes": 925745152
+    },
+    {
+      "phase": "target_loaded",
+      "allocated_bytes": 4149215232,
+      "reserved_bytes": 4154458112,
+      "peak_allocated_bytes": 4149215232,
+      "peak_reserved_bytes": 4154458112,
+      "gpu_free_bytes": 3059744768,
+      "gpu_total_bytes": 34208743424,
+      "gpu_used_global_bytes": 31148998656,
+      "host_rss_bytes": 925745152
+    }
+  ],
+  "repeats": [
+    {
+      "repeat": 0,
+      "generated_tokens": 16,
+      "first_step_tokens": 1,
+      "steady_generated_tokens": 15,
+      "ttft_ms": 2918.999860994518,
+      "steady_decode_ms": 37202.01147600892,
+      "steady_ms_per_token": 2480.1340984005947,
+      "steady_tokens_per_s": 0.40320400443060184,
+      "total_ms": 40121.01133700344,
+      "end_to_end_tokens_per_s": 0.39879353652392274,
+      "target_forwards": 17,
+      "draft_forwards": 0,
+      "proposed_draft_tokens": 0,
+      "accepted_draft_tokens": 0,
+      "draft_acceptance_rate": 0.0,
+      "verifier_steps": 16,
+      "mean_emitted_tokens_per_step": 1.0,
+      "output_ids": [
+        90106,
+        4221,
+        29344,
+        45478,
+        7612,
+        16994,
+        2585,
+        315,
+        6636,
+        6932,
+        11,
+        5044,
+        9629,
+        11,
+        85356,
+        11
+      ],
+      "memory": [
+        {
+          "phase": "cache_initialized",
+          "allocated_bytes": 4149216256,
+          "reserved_bytes": 4154458112,
+          "peak_allocated_bytes": 4149216256,
+          "peak_reserved_bytes": 4154458112,
+          "gpu_free_bytes": 3059744768,
+          "gpu_total_bytes": 34208743424,
+          "gpu_used_global_bytes": 31148998656,
+          "host_rss_bytes": 928329728
+        },
+        {
+          "phase": "decode_peak",
+          "allocated_bytes": 4158387712,
+          "reserved_bytes": 4240441344,
+          "peak_allocated_bytes": 4204010496,
+          "peak_reserved_bytes": 4240441344,
+          "gpu_free_bytes": 2866806784,
+          "gpu_total_bytes": 34208743424,
+          "gpu_used_global_bytes": 31341936640,
+          "host_rss_bytes": 1159041024
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "steady_tokens_per_s_median": 0.40320400443060184,
+    "steady_tokens_per_s_mean": 0.40320400443060184,
+    "final_memory": {
+      "phase": "result_write",
+      "allocated_bytes": 4149216256,
+      "reserved_bytes": 4240441344,
+      "peak_allocated_bytes": 4204010496,
+      "peak_reserved_bytes": 4240441344,
+      "gpu_free_bytes": 2866806784,
+      "gpu_total_bytes": 34208743424,
+      "gpu_used_global_bytes": 31341936640,
+      "host_rss_bytes": 1159114752
+    }
+  }
+}
