@@ -43,11 +43,13 @@ python -m pip install -e . --no-build-isolation -v
 ## Running benchmark
 
 ```bash
-python e2e/benchmark.py \
-    --batch_size 1 \
-    --prefill_seq_len 512 \
-    --decode_steps 128
+python benchmark.py \
+      --batch_size 1 \
+      --prefill_seq_len 2048 \
+      --decode_steps 128 \
+      --int4_only
 ```
+"--int4_only" is required to run CodeLlama-34b-hf
 
 For simulation-only experiments, see the [fake_quant](fake_quant) directory.
 

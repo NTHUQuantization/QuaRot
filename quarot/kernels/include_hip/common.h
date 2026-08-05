@@ -6,7 +6,7 @@
 #include <algorithm>
 #include <cstdint>
 
-using Int4Storage = uint8_t; // Definition for 4-bit storage type
+using Int4Storage = uint8_t;
 
 constexpr uint32_t kElementsPerVector = 2;
 constexpr int qmin = -8;
@@ -18,7 +18,9 @@ constexpr T cdiv(T x, T y)
     return (x + y - 1) / y;
 }
 
-__host__ __device__ inline int clamp(int value, int lower, int upper)
+__host__ __device__ inline int clamp(
+    int value, int lower, int upper)
 {
-    return value < lower ? lower : (value > upper ? upper : value);
+    return value < lower ? lower :
+           (value > upper ? upper : value);
 }

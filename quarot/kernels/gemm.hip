@@ -3,6 +3,8 @@
 #include <hip/hip_runtime.h>
 
 #include <cstddef>
+#include <cstdlib>
+#include <cstring>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -414,8 +416,12 @@ enum class DispatchVariant
 {
     Kv1024LdsSwizzle,
     N4096LdsSwizzle,
+    N6656BPre,
+    N8192BPre,
     N11008BPre,
     N14336BPre,
+    N17920BPre,
+    N22016BPre,
     FallbackBPre,
 };
 
@@ -425,10 +431,61 @@ DispatchVariant select_variant(uint32_t N)
     {
     case 1024: return DispatchVariant::Kv1024LdsSwizzle;
     case 4096: return DispatchVariant::N4096LdsSwizzle;
+    case 6656: return DispatchVariant::N6656BPre;
+    case 8192: return DispatchVariant::N8192BPre;
     case 11008: return DispatchVariant::N11008BPre;
     case 14336: return DispatchVariant::N14336BPre;
+    case 17920: return DispatchVariant::N17920BPre;
+    case 22016: return DispatchVariant::N22016BPre;
     default: return DispatchVariant::FallbackBPre;
     }
+}
+
+bool env_flag_enabled(const char* name)
+{
+    const char* value = std::getenv(name);
+    if(value == nullptr)
+    {
+        return false;
+    }
+    return std::string(value) == "1" || std::string(value) == "true" ||
+           std::string(value) == "TRUE" || std::string(value) == "on" ||
+           std::string(value) == "ON" || std::string(value) == "yes" ||
+           std::string(value) == "YES";
+}
+
+bool env_flag_disabled(const char* name)
+{
+    const char* value = std::getenv(name);
+    if(value == nullptr)
+    {
+        return false;
+    }
+    return std::string(value) == "0" || std::string(value) == "false" ||
+           std::string(value) == "FALSE" || std::string(value) == "off" ||
+           std::string(value) == "OFF" || std::string(value) == "no" ||
+           std::string(value) == "NO";
+}
+
+bool bpre_cache_disabled()
+{
+    if(env_flag_enabled("GEMM_INT4_HIP_DISABLE_BPRE") ||
+       env_flag_enabled("GEMM_INT4_HIP_DISABLE_BPRE_CACHE"))
+    {
+        return true;
+    }
+    // Runtime caching duplicates the row-packed weight. Keep it opt-in;
+    // Linear4bit uses replacement prepacked storage instead.
+    return !env_flag_enabled("GEMM_INT4_HIP_BPRE_CACHE");
+}
+
+bool bpre_input_enabled()
+{
+    const char* layout = std::getenv("GEMM_INT4_HIP_B_LAYOUT");
+    return env_flag_enabled("GEMM_INT4_HIP_ASSUME_BPRE_INPUT") ||
+           (layout != nullptr &&
+            (std::string(layout) == "bpre" || std::string(layout) == "BPRE" ||
+             std::string(layout) == "bpre-only" || std::string(layout) == "offline-bpre"));
 }
 
 const char* variant_name(DispatchVariant variant)
@@ -437,9 +494,68 @@ const char* variant_name(DispatchVariant variant)
     {
     case DispatchVariant::Kv1024LdsSwizzle: return "N=1024 LDS swizzle, block4x4 mt2 nt2 LDS64";
     case DispatchVariant::N4096LdsSwizzle: return "N=4096 LDS swizzle, block4x4 mt2 nt2 LDS64";
+    case DispatchVariant::N6656BPre: return "N=6656 cached B-prepack, block2x2 mt2 nt4";
+    case DispatchVariant::N8192BPre: return "N=8192 cached B-prepack, block2x2 mt2 nt4";
     case DispatchVariant::N11008BPre: return "N=11008 cached B-prepack, block2x2 mt2 nt4";
     case DispatchVariant::N14336BPre: return "N=14336 cached B-prepack, block2x2 mt2 nt4";
+    case DispatchVariant::N17920BPre: return "N=17920 cached B-prepack, block2x2 mt2 nt4";
+    case DispatchVariant::N22016BPre: return "N=22016 cached B-prepack, block2x2 mt2 nt4";
     case DispatchVariant::FallbackBPre: return "fallback cached B-prepack, block4x4 mt1 nt2";
+    }
+    return "unknown";
+}
+
+const char* variant_name_memory_mode(DispatchVariant variant)
+{
+    if(!bpre_cache_disabled())
+    {
+        return variant_name(variant);
+    }
+
+    switch(variant)
+    {
+    case DispatchVariant::Kv1024LdsSwizzle: return "N=1024 LDS swizzle, block4x4 mt2 nt2 LDS64";
+    case DispatchVariant::N4096LdsSwizzle: return "N=4096 LDS swizzle, block4x4 mt2 nt2 LDS64";
+    case DispatchVariant::N6656BPre:
+        return "N=6656 memory mode, row-packed LDS swizzle, block2x2 mt2 nt4 LDS64";
+    case DispatchVariant::N8192BPre:
+        return "N=8192 memory mode, row-packed LDS swizzle, block2x2 mt2 nt4 LDS64";
+    case DispatchVariant::N11008BPre:
+        return "N=11008 memory mode, row-packed LDS swizzle, block2x2 mt2 nt4 LDS64";
+    case DispatchVariant::N14336BPre:
+        return "N=14336 memory mode, row-packed LDS swizzle, block2x4 mt4 nt4 LDS128";
+    case DispatchVariant::N17920BPre:
+        return "N=17920 memory mode, row-packed LDS swizzle, block2x4 mt4 nt4 LDS128";
+    case DispatchVariant::N22016BPre:
+        return "N=22016 memory mode, row-packed LDS swizzle, block2x4 mt4 nt4 LDS128";
+    case DispatchVariant::FallbackBPre:
+        return "fallback memory mode, row-packed LDS swizzle, block4x4 mt1 nt2 LDS64";
+    }
+    return "unknown";
+}
+
+const char* variant_name_bpre_only(DispatchVariant variant)
+{
+    switch(variant)
+    {
+    case DispatchVariant::Kv1024LdsSwizzle:
+        return "N=1024 BPre-only, block2x2 mt2 nt4";
+    case DispatchVariant::N4096LdsSwizzle:
+        return "N=4096 BPre-only, block2x2 mt2 nt4";
+    case DispatchVariant::N6656BPre:
+        return "N=6656 BPre-only, block2x2 mt2 nt4";
+    case DispatchVariant::N8192BPre:
+        return "N=8192 BPre-only, block2x2 mt2 nt4";
+    case DispatchVariant::N11008BPre:
+        return "N=11008 BPre-only, block2x2 mt2 nt4";
+    case DispatchVariant::N14336BPre:
+        return "N=14336 BPre-only, block2x2 mt2 nt4";
+    case DispatchVariant::N17920BPre:
+        return "N=17920 BPre-only, block2x2 mt2 nt4";
+    case DispatchVariant::N22016BPre:
+        return "N=22016 BPre-only, block2x2 mt2 nt4";
+    case DispatchVariant::FallbackBPre:
+        return "fallback BPre-only, block4x4 mt1 nt2";
     }
     return "unknown";
 }
@@ -450,8 +566,12 @@ bool variant_uses_bpre(DispatchVariant variant)
     {
     case DispatchVariant::Kv1024LdsSwizzle:
     case DispatchVariant::N4096LdsSwizzle: return false;
+    case DispatchVariant::N6656BPre:
+    case DispatchVariant::N8192BPre:
     case DispatchVariant::N11008BPre:
     case DispatchVariant::N14336BPre:
+    case DispatchVariant::N17920BPre:
+    case DispatchVariant::N22016BPre:
     case DispatchVariant::FallbackBPre: return true;
     }
     return true;
@@ -576,9 +696,9 @@ void dispatch_matmul(const Int4Storage* A,
                      uint32_t K,
                      int32_t* C)
 {
-    if((M % 16) != 0 || (N % 16) != 0 || (K % kWmmaK) != 0)
+    if((K % kWmmaK) != 0)
     {
-        throw std::runtime_error("M and N must be multiples of 16; K must be a multiple of 32");
+        throw std::runtime_error("K must be a multiple of 32");
     }
 
     switch(select_variant(N))
@@ -589,17 +709,109 @@ void dispatch_matmul(const Int4Storage* A,
     case DispatchVariant::N4096LdsSwizzle:
         launch_lds_swizzle<4, 4, 2, 2, 64>(A, BRow, C, M, N, K);
         break;
+    case DispatchVariant::N6656BPre:
+        if(BPre != nullptr)
+        {
+            launch_bpre<2, 2, 2, 4>(A, BPre, C, M, N, K);
+        }
+        else
+        {
+            launch_lds_swizzle<2, 2, 2, 4, 64>(A, BRow, C, M, N, K);
+        }
+        break;
+    case DispatchVariant::N8192BPre:
+        if(BPre != nullptr)
+        {
+            launch_bpre<2, 2, 2, 4>(A, BPre, C, M, N, K);
+        }
+        else
+        {
+            launch_lds_swizzle<2, 2, 2, 4, 64>(A, BRow, C, M, N, K);
+        }
+        break;
     case DispatchVariant::N11008BPre:
-        launch_bpre<2, 2, 2, 4>(A, BPre, C, M, N, K);
+        if(BPre != nullptr)
+        {
+            launch_bpre<2, 2, 2, 4>(A, BPre, C, M, N, K);
+        }
+        else
+        {
+            launch_lds_swizzle<2, 2, 2, 4, 64>(A, BRow, C, M, N, K);
+        }
         break;
     case DispatchVariant::N14336BPre:
+        if(BPre != nullptr)
+        {
+            launch_bpre<2, 2, 2, 4>(A, BPre, C, M, N, K);
+        }
+        else
+        {
+            launch_lds_swizzle<2, 4, 4, 4, 128>(A, BRow, C, M, N, K);
+        }
+        break;
+    case DispatchVariant::N17920BPre:
+        if(BPre != nullptr)
+        {
+            launch_bpre<2, 2, 2, 4>(A, BPre, C, M, N, K);
+        }
+        else
+        {
+            launch_lds_swizzle<2, 4, 4, 4, 128>(A, BRow, C, M, N, K);
+        }
+        break;
+    case DispatchVariant::N22016BPre:
+        if(BPre != nullptr)
+        {
+            launch_bpre<2, 2, 2, 4>(A, BPre, C, M, N, K);
+        }
+        else
+        {
+            launch_lds_swizzle<2, 4, 4, 4, 128>(A, BRow, C, M, N, K);
+        }
+        break;
+    case DispatchVariant::FallbackBPre:
+        if(BPre != nullptr)
+        {
+            launch_bpre<4, 4, 1, 2>(A, BPre, C, M, N, K);
+        }
+        else
+        {
+            launch_lds_swizzle<4, 4, 1, 2, 64>(A, BRow, C, M, N, K);
+        }
+        break;
+    }
+    check_hip(hipGetLastError(), "dispatch_matmul launch");
+}
+
+void dispatch_matmul_bpre_only(const Int4Storage* A,
+                               const Int4Storage* BPre,
+                               uint32_t M,
+                               uint32_t N,
+                               uint32_t K,
+                               int32_t* C)
+{
+    if((K % kWmmaK) != 0)
+    {
+        throw std::runtime_error("K must be a multiple of 32");
+    }
+
+    switch(select_variant(N))
+    {
+    case DispatchVariant::Kv1024LdsSwizzle:
+    case DispatchVariant::N4096LdsSwizzle:
+    case DispatchVariant::N6656BPre:
+    case DispatchVariant::N8192BPre:
+    case DispatchVariant::N11008BPre:
+    case DispatchVariant::N14336BPre:
+    case DispatchVariant::N17920BPre:
+    case DispatchVariant::N22016BPre:
         launch_bpre<2, 2, 2, 4>(A, BPre, C, M, N, K);
         break;
     case DispatchVariant::FallbackBPre:
         launch_bpre<4, 4, 1, 2>(A, BPre, C, M, N, K);
         break;
     }
-    check_hip(hipGetLastError(), "dispatch_matmul launch");
+    check_hip(hipGetLastError(), "dispatch_matmul_bpre_only launch");
 }
 
 } // namespace
@@ -624,15 +836,130 @@ void matmul_host(const Int4Storage* A,
     {
         throw std::invalid_argument("matmul_host received a null device pointer");
     }
-    if((M % 16) != 0 || (N % 16) != 0 || (K % kWmmaK) != 0)
+    if((K % kWmmaK) != 0)
     {
-        throw std::invalid_argument("M and N must be multiples of 16; K must be a multiple of 32");
+        throw std::invalid_argument("K must be a multiple of 32");
     }
 
     const DispatchVariant variant = select_variant(N);
-    const Int4Storage* BPre      = variant_uses_bpre(variant) ? get_or_create_bpre(B, N, K)
-                                                               : nullptr;
+    if(bpre_input_enabled() && variant != DispatchVariant::Kv1024LdsSwizzle)
+    {
+        dispatch_matmul_bpre_only(A, B, M, N, K, C);
+        return;
+    }
+
+    const bool use_bpre_cache = variant_uses_bpre(variant) && !bpre_cache_disabled();
+    const Int4Storage* BPre   = use_bpre_cache ? get_or_create_bpre(B, N, K) : nullptr;
     dispatch_matmul(A, B, BPre, M, N, K, C);
+#endif
+}
+
+size_t prepack_b_host_size_bytes(uint32_t N, uint32_t K)
+{
+    if((K % kWmmaK) != 0)
+    {
+        throw std::invalid_argument("K must be a multiple of 32");
+    }
+    return b_prepacked_size_bytes(N, K);
+}
+
+void prepack_b_cpu_host(const Int4Storage* BRowHost,
+                        uint32_t N,
+                        uint32_t K,
+                        Int4Storage* BPreHost)
+{
+#if !defined(QUAROT_BPRE_GFX12)
+    (void)BRowHost;
+    (void)N;
+    (void)K;
+    (void)BPreHost;
+    throw std::runtime_error("GEMM_int4_for_hip requires gfx12/gfx1201 WMMA int4 support");
+#else
+    if(BRowHost == nullptr || BPreHost == nullptr)
+    {
+        throw std::invalid_argument("prepack_b_cpu_host received a null host pointer");
+    }
+    if((K % kWmmaK) != 0)
+    {
+        throw std::invalid_argument("K must be a multiple of 32");
+    }
+
+    const uint32_t n_tiles16 = (N + 15u) / 16u;
+    const uint32_t k_groups  = K / kWmmaK;
+    const uint32_t k_bytes   = K / 2u;
+    const size_t dst_bytes   = b_prepacked_size_bytes(N, K);
+
+    std::memset(BPreHost, 0, dst_bytes);
+    for(uint32_t tile = 0; tile < n_tiles16; ++tile)
+    {
+        for(uint32_t kg = 0; kg < k_groups; ++kg)
+        {
+            for(uint32_t row_blk = 0; row_blk < 2u; ++row_blk)
+            {
+                for(uint32_t lane16 = 0; lane16 < 16u; ++lane16)
+                {
+                    const uint32_t n      = tile * 16u + lane16;
+                    const uint32_t byte_k = kg * 16u + row_blk * 8u;
+                    const size_t dst_offset =
+                        (((static_cast<size_t>(tile) * k_groups + kg) * 2u + row_blk) *
+                             16u +
+                         lane16) *
+                        8u;
+                    if(n < N)
+                    {
+                        const size_t src_offset = static_cast<size_t>(n) * k_bytes + byte_k;
+                        std::memcpy(BPreHost + dst_offset, BRowHost + src_offset, 8u);
+                    }
+                }
+            }
+        }
+    }
+#endif
+}
+
+void prepack_b_device_host(const Int4Storage* BRow,
+                           uint32_t N,
+                           uint32_t K,
+                           Int4Storage* BPre)
+{
+#if !defined(QUAROT_BPRE_GFX12)
+    (void)BRow; (void)N; (void)K; (void)BPre;
+    throw std::runtime_error("GEMM_int4_for_hip requires gfx12/gfx1201 WMMA int4 support");
+#else
+    if(BRow == nullptr || BPre == nullptr)
+        throw std::invalid_argument("prepack_b_device_host received a null device pointer");
+    if((K % kWmmaK) != 0)
+        throw std::invalid_argument("K must be a multiple of 32");
+    launch_prepack_b(BRow, BPre, N, K);
+#endif
+}
+
+void matmul_bpre_host(const Int4Storage* A,
+                      const Int4Storage* BPre,
+                      uint32_t M,
+                      uint32_t N,
+                      uint32_t K,
+                      int32_t* C)
+{
+#if !defined(QUAROT_BPRE_GFX12)
+    (void)A;
+    (void)BPre;
+    (void)M;
+    (void)N;
+    (void)K;
+    (void)C;
+    throw std::runtime_error("GEMM_int4_for_hip requires gfx12/gfx1201 WMMA int4 support");
+#else
+    if(A == nullptr || BPre == nullptr || C == nullptr)
+    {
+        throw std::invalid_argument("matmul_bpre_host received a null device pointer");
+    }
+    if((K % kWmmaK) != 0)
+    {
+        throw std::invalid_argument("K must be a multiple of 32");
+    }
+
+    dispatch_matmul_bpre_only(A, BPre, M, N, K, C);
 #endif
 }
 
@@ -662,5 +989,15 @@ size_t prepacked_weight_cache_bytes()
 
 const char* selected_kernel_name(uint32_t N)
 {
-    return variant_name(select_variant(N));
+    const DispatchVariant variant = select_variant(N);
+    if(bpre_input_enabled() && variant != DispatchVariant::Kv1024LdsSwizzle)
+    {
+        return variant_name_bpre_only(variant);
+    }
+    return variant_name_memory_mode(variant);
+}
+
+const char* selected_bpre_kernel_name(uint32_t N)
+{
+    return variant_name_bpre_only(select_variant(N));
 }

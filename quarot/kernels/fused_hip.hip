@@ -48,19 +48,25 @@ __device__ __forceinline__ float hadacore_shfl_xor_f32(float value, int mask) {
   return __shfl_xor_sync(0xffffffffULL, value, mask, 32);
 }
 
-__device__ __forceinline__ void hadacore_h64_regs(float values[2], int lane) {
+template <int Regs>
+__device__ __forceinline__ void hadacore_warp_hadamard_regs(
+    float values[2], int lane) {
   for (int mask = 1; mask < 32; mask <<= 1) {
 #pragma unroll
     for (int r = 0; r < 2; ++r) {
-      const float a = values[r];
-      const float b = hadacore_shfl_xor_f32(a, mask);
-      values[r] = (lane & mask) == 0 ? a + b : b - a;
+      if (r < Regs) {
+        const float a = values[r];
+        const float b = hadacore_shfl_xor_f32(a, mask);
+        values[r] = (lane & mask) == 0 ? a + b : b - a;
+      }
     }
   }
-  const float a = values[0];
-  const float b = values[1];
-  values[0] = a + b;
-  values[1] = a - b;
+  if (Regs == 2) {
+    const float a = values[0];
+    const float b = values[1];
+    values[0] = a + b;
+    values[1] = a - b;
+  }
 }
 
 __device__ __forceinline__ void hadamard(float* values, int width) {
@@ -150,24 +156,51 @@ __global__ void fused_attention_hadamard_quant_kernel(
   const int row = blockIdx.x;
   const int width = num_heads * head_dim;
   if (row >= rows) return;
-  for (int i = threadIdx.x; i < width; i += blockDim.x) {
-    const int d = i / num_heads;
-    const int h = i % num_heads;
-    values[i] = __half2float(attention[(row * num_heads + h) * head_dim + d]);
-  }
-  __syncthreads();
-  // values is [head_dim, num_heads], matching OnlineHadamard after transpose.
-  for (int d = 0; d < head_dim; ++d) {
-    float* group = values + d * num_heads;
-    for (int stride = 1; stride < num_heads; stride <<= 1) {
-      for (int pair = threadIdx.x; pair < num_heads / 2; pair += blockDim.x) {
-        int low = ((pair / stride) * (stride << 1)) + (pair & (stride - 1));
-        float a = group[low];
-        float b = group[low + stride];
-        group[low] = a + b;
-        group[low + stride] = a - b;
+  if (num_heads == 32 || num_heads == 64) {
+    const int lane = threadIdx.x & 31;
+    const int wave = threadIdx.x >> 5;
+    const int waves = blockDim.x >> 5;
+    const int regs = num_heads >> 5;
+    for (int d = wave; d < head_dim; d += waves) {
+      float registers[2] = {0.0f, 0.0f};
+#pragma unroll
+      for (int r = 0; r < 2; ++r) {
+        if (r < regs) {
+          const int h = r * 32 + lane;
+          registers[r] = __half2float(
+              attention[(row * num_heads + h) * head_dim + d]);
+        }
       }
-      __syncthreads();
+      if (regs == 1) {
+        hadacore_warp_hadamard_regs<1>(registers, lane);
+      } else {
+        hadacore_warp_hadamard_regs<2>(registers, lane);
+      }
+#pragma unroll
+      for (int r = 0; r < 2; ++r) {
+        if (r < regs) values[d * num_heads + r * 32 + lane] = registers[r];
+      }
+    }
+    __syncthreads();
+  } else {
+    for (int i = threadIdx.x; i < width; i += blockDim.x) {
+      const int d = i / num_heads;
+      const int h = i % num_heads;
+      values[i] = __half2float(attention[(row * num_heads + h) * head_dim + d]);
+    }
+    __syncthreads();
+    for (int d = 0; d < head_dim; ++d) {
+      float* group = values + d * num_heads;
+      for (int stride = 1; stride < num_heads; stride <<= 1) {
+        for (int pair = threadIdx.x; pair < num_heads / 2; pair += blockDim.x) {
+          int low = ((pair / stride) * (stride << 1)) + (pair & (stride - 1));
+          float a = group[low];
+          float b = group[low + stride];
+          group[low] = a + b;
+          group[low + stride] = a - b;
+        }
+        __syncthreads();
+      }
     }
   }
   const float norm = rsqrtf(float(num_heads));
@@ -232,16 +265,21 @@ __global__ void fused_ffn_silu_hadamard_quant_general_kernel(
   }
   __syncthreads();
 
-  if (inner == 64) {
+  if (inner == 32 || inner == 64) {
     const int lane = threadIdx.x & 31;
     const int wave = threadIdx.x >> 5;
     const int waves = blockDim.x >> 5;
     for (int group = wave; group < remainder; group += waves) {
-      float registers[2] = {values[group * 64 + lane],
-                            values[group * 64 + 32 + lane]};
-      hadacore_h64_regs(registers, lane);
-      values[group * 64 + lane] = registers[0];
-      values[group * 64 + 32 + lane] = registers[1];
+      const int regs = inner >> 5;
+      float registers[2] = {values[group * inner + lane], 0.0f};
+      if (regs == 2) registers[1] = values[group * inner + 32 + lane];
+      if (inner == 32) {
+        hadacore_warp_hadamard_regs<1>(registers, lane);
+      } else {
+        hadacore_warp_hadamard_regs<2>(registers, lane);
+      }
+      values[group * inner + lane] = registers[0];
+      if (regs == 2) values[group * inner + 32 + lane] = registers[1];
     }
     __syncthreads();
   } else {

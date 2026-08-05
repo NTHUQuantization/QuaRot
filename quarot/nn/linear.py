@@ -34,20 +34,46 @@ class Linear4bit(torch.nn.Module):
         self.register_buffer('weight', (torch.randint(1, 7, (self.out_features, self.in_features // 2),
                                                              # SubByte weight
                                                              dtype=torch.uint8, requires_grad=False)))
-        if bias:                                                        
+        if bias:
             self.register_buffer('bias', torch.zeros((self.out_features), dtype=dtype))
         else:
             self.bias = None
-        
+
+        self._weight_is_prepacked = False
+    def _prepack_weight(self):
+        if self._weight_is_prepacked or not self.weight.is_cuda:
+            return
+        prepacked = quarot._HIP.prepack_b(self.weight.contiguous())
+        expected = self.out_features * (self.in_features // 2)
+        if prepacked.numel() != expected:
+            raise RuntimeError(
+                "prepacked weight padding is unsupported for this Linear4bit shape")
+        # Replace row-packed storage; do not retain a second global-cache copy.
+        self.weight = prepacked.view(self.out_features, self.in_features // 2)
+        self._weight_is_prepacked = True
+
+    def _apply(self, fn, recurse=True):
+        result = super()._apply(fn, recurse=recurse)
+        if self.weight.is_cuda:
+            self._prepack_weight()
+        return result
+
+    def _load_from_state_dict(self, *args, **kwargs):
+        # Existing checkpoints contain conventional row-packed weights.
+        self._weight_is_prepacked = False
+        return super()._load_from_state_dict(*args, **kwargs)
+
+
     def forward(self, x):
         #if torch.cuda.current_device() != x.device:
         #    torch.cuda.set_device(x.device)
-        
+
         assert type(x) == quarot.PackedQuantizedTensor #Quantized input is given
         x, scales_x = x.quantized_x, x.scales_x
         #shape_handler = ShapeHandler(quantized_x)
         #quantized_x = shape_handler.flatten(quantized_x)
-        x = quarot.matmul(x, self.weight)
+        self._prepack_weight()
+        x = quarot.matmul_bpre(x, self.weight, self.out_features, self.in_features)
         #out = shape_handler.unflatten(
         #    quarot.sym_dequant(int_result, scales_x, self.weight_scales))
         if self.bias is not None:
@@ -63,8 +89,8 @@ class Linear4bit(torch.nn.Module):
         routine. We will convert it to subByte representation and save it in the int_weight buffer.
         '''
         weight_matrix = module.weight.data
-        
-        
+
+
         int_module = Linear4bit(module.in_features, module.out_features, bias=module.bias is not None, dtype=weight_matrix.dtype).to(weight_matrix.dtype)
         if weight_scales is not None:
             assert weight_scales.shape == (module.out_features, 1), 'weight_scales should have shape (out_features, 1)'
@@ -72,8 +98,8 @@ class Linear4bit(torch.nn.Module):
             int_module.weight_scales.copy_(weight_scales.to(weight_matrix.dtype))
             int_rounded_weight = (weight_matrix/weight_scales.cuda()).round()
             int_module.weight.copy_(quarot.functional.pack_i4(int_rounded_weight.to(torch.int8)).cpu())
-        
+
             if module.bias is not None:
                 int_module.bias.copy_(module.bias)
-        
+
         return int_module

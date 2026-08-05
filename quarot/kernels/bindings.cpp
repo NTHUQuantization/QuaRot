@@ -25,6 +25,40 @@ torch::Tensor matmul(const torch::Tensor &A, const torch::Tensor &B)
     return C;
 }
 
+torch::Tensor prepack_b(const torch::Tensor &B)
+{
+    torch::checkAllContiguous("prepack_b", {{B, "B", 0}});
+    torch::checkDeviceType("prepack_b", {B}, at::DeviceType::CUDA);
+    TORCH_CHECK(B.scalar_type() == torch::kUInt8, "B must be uint8");
+    TORCH_CHECK(B.dim() == 2, "B must have shape [N, K / 2]");
+    const uint32_t N = B.size(0);
+    const uint32_t K = B.size(1) * kElementsPerVector;
+    const size_t bytes = prepack_b_host_size_bytes(N, K);
+    auto BPre = torch::empty({static_cast<int64_t>(bytes)}, B.options());
+    prepack_b_device_host(B.data_ptr<Int4Storage>(), N, K, BPre.data_ptr<Int4Storage>());
+    return BPre;
+}
+
+torch::Tensor matmul_bpre(const torch::Tensor &A, const torch::Tensor &BPre,
+                          int64_t N, int64_t K)
+{
+    torch::checkAllContiguous("matmul_bpre", {{A, "A", 0}, {BPre, "BPre", 1}});
+    torch::checkDeviceType("matmul_bpre", {A, BPre}, at::DeviceType::CUDA);
+    torch::checkAllSameGPU("matmul_bpre", {{A, "A", 0}, {BPre, "BPre", 1}});
+    TORCH_CHECK(A.scalar_type() == torch::kUInt8 && BPre.scalar_type() == torch::kUInt8,
+                "A and BPre must be uint8");
+    TORCH_CHECK(N > 0 && K > 0 && K % 32 == 0, "invalid N/K for matmul_bpre");
+    TORCH_CHECK(A.size(1) * kElementsPerVector == K, "A has the wrong K dimension");
+    TORCH_CHECK(static_cast<size_t>(BPre.numel()) >=
+                    prepack_b_host_size_bytes(static_cast<uint32_t>(N), static_cast<uint32_t>(K)),
+                "BPre is smaller than the required prepacked layout");
+    const uint32_t M = A.size(0);
+    auto C = torch::empty({M, N}, torch::dtype(torch::kInt32).device(A.device()));
+    matmul_bpre_host(A.data_ptr<Int4Storage>(), BPre.data_ptr<Int4Storage>(), M,
+                     static_cast<uint32_t>(N), static_cast<uint32_t>(K), C.data_ptr<int32_t>());
+    return C;
+}
+
 torch::Tensor sym_quant(const torch::Tensor &x, const torch::Tensor &scale)
 {
     torch::checkAllContiguous("sym_quant", {{x,     "x",     0},
@@ -356,6 +390,7 @@ void append_kv_f16(torch::Tensor kv_data, torch::Tensor kv_param,
 
   int num_layers = static_cast<int>(kv_data.size(1));
   int num_heads = static_cast<int>(kv_data.size(3));
+
   int page_size = static_cast<int>(kv_data.size(4));
   int head_dim = static_cast<int>(kv_data.size(5));
   int batch_size = static_cast<int>(k.size(0));
@@ -389,6 +424,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m
           "output: torch.Tensor(M x N, INT32, CUDA)\n"
           "output = int4Unpacking(A) @ int4Unpacking(B)^T",
           py::arg("A"), py::arg("B"));
+    m.def("prepack_b", &prepack_b, "Prepack a row-packed INT4 weight", py::arg("B"));
+    m.def("matmul_bpre", &matmul_bpre, "INT4 GEMM with prepacked B",
+          py::arg("A"), py::arg("BPre"), py::arg("N"), py::arg("K"));
+
 
     m.def("sym_quant", &sym_quant,
           "input: (src: torch.Tensor(M x N, FP16, CUDA), scale: "
@@ -417,7 +456,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m
     m.def("append_kv_i4", &append_kv_i4, "");
     m.def("batch_decode_f16", &batch_decode_f16, "");
     m.def("init_kv_f16", &init_kv_f16, "");
-    m.def("append_kv_f16", &append_kv_f16, ""); 
+    m.def("append_kv_f16", &append_kv_f16, "");
     m.def("fused_append_kv_i4", &fused_append_kv_i4, "Fused Hadamard, asymmetric INT4 quantization, and paged KV-cache append");
     m.def("fused_attention_hadamard_quant", &fused_attention_hadamard_quant, "Fused attention-output Hadamard and signed INT4 quantization");
     m.def("fused_ffn_silu_hadamard_quant", &fused_ffn_silu_hadamard_quant, "Fused SiLU, FFN Hadamard, and signed INT4 quantization");

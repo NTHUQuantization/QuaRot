@@ -6,8 +6,8 @@ from . import functional
 import quarot._HIP
 
 
-__all__ = [ 
-           "matmul", #int-4 matmul
+__all__ = [
+           "matmul", "matmul_bpre", #int-4 matmul
            "sym_quant", "sym_dequant", "PackedQuantizedTensor", # Quantization
 ]
 
@@ -50,6 +50,17 @@ def matmul(A, B):
 
     return result.view(*A_shape_excl_last, *B_shape_excl_last)
 
+def matmul_bpre(A, B, out_features, in_features):
+    A, A_shape_excl_last = flatten_last_dim_and_return_shape(A)
+    original_m = A.shape[0]
+    padded_m = (original_m + 15) // 16 * 16
+    if padded_m != original_m:
+        A = torch.nn.functional.pad(A, (0, 0, 0, padded_m - original_m))
+    result = _HIP.matmul_bpre(
+        A.contiguous(), B.contiguous(), out_features, in_features)
+    return result[:original_m].view(*A_shape_excl_last, out_features)
+
+
 def sym_quant(x, scale):
     assert x.dtype == scale.dtype == torch.float16
     x, x_shape_excl_last = flatten_last_dim_and_return_shape(x)
@@ -63,19 +74,19 @@ def sym_dequant(q, scale_row, scale_col, bits=32):
 
 
 class PackedQuantizedTensor:
-    def __init__(self, 
-                 quantized_x: torch.Tensor, 
+    def __init__(self,
+                 quantized_x: torch.Tensor,
                  scales_x: torch.Tensor):
         self.quantized_x = quantized_x
         self.scales_x = scales_x
 
     def size(self):
         return self.quantized_x.size()
-    
+
     @property
     def device(self):
         return self.quantized_x.device
-    
+
     @property
     def dtype(self):
         return self.quantized_x.dtype
