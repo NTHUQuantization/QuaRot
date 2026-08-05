@@ -11,8 +11,9 @@ import transformers
 
 model_configs = [
     # "meta-llama/Llama-2-7b-hf",
-     "meta-llama/Llama-2-13b-hf",
+    # "meta-llama/Llama-2-13b-hf",
     # "meta-llama/Llama-2-70b-hf",
+    "meta-llama/CodeLlama-34b-hf",
 ]
 
 benchmark_dtypes = ["int4", torch.float16]
@@ -149,35 +150,42 @@ def benchmark(args):
             model, args.batch_size, args.prefill_seq_len, args.decode_steps)
         del model
         _cleanup()
-        model = get_model_fp16(config_name)
-        time_prefill_f16, time_decode_f16, time_e2e_f16, mem_f16 = run_all_for_model(
-            model, args.batch_size, args.prefill_seq_len, args.decode_steps)
-        del model
-        _cleanup()
+        if not args.int4_only:
+            model = get_model_fp16(config_name)
+            time_prefill_f16, time_decode_f16, time_e2e_f16, mem_f16 = run_all_for_model(
+                model, args.batch_size, args.prefill_seq_len, args.decode_steps)
+            del model
+            _cleanup()
+        else:
+            time_prefill_f16 = time_decode_f16 = time_e2e_f16 = mem_f16 = None
 
         print(f'{config_name} & {args.batch_size} & {args.prefill_seq_len}')
         print('---------------------------------------------------------------------')
         print(f"Prefill Int4 time: {np.mean(time_prefill_i4):.3f} +- {1.96 * np.std(time_prefill_i4):.3f}ms")
-        print(f"Prefill FP16 time: {np.mean(time_prefill_f16):.3f} +- {1.96 * np.std(time_prefill_f16):.3f}ms")
-        print(f"Speedup: {np.mean(time_prefill_f16) / np.mean(time_prefill_i4):.3f}x")
+        if time_prefill_f16 is not None:
+            print(f"Prefill FP16 time: {np.mean(time_prefill_f16):.3f} +- {1.96 * np.std(time_prefill_f16):.3f}ms")
+            print(f"Speedup: {np.mean(time_prefill_f16) / np.mean(time_prefill_i4):.3f}x")
 
         if args.decode_steps is not None:
             print('---------------------------------------------------------------------')
             print(f"Decode Int4 time: {np.mean(time_decode_i4):.3f} +- {1.96 * np.std(time_decode_i4):.3f}ms")
-            print(f"Decode FP16 time: {np.mean(time_decode_f16):.3f} +- {1.96 * np.std(time_decode_f16):.3f}ms")
-            print(f"Speedup: {np.mean(time_decode_f16) / np.mean(time_decode_i4):.3f}x")
+            if time_decode_f16 is not None:
+                print(f"Decode FP16 time: {np.mean(time_decode_f16):.3f} +- {1.96 * np.std(time_decode_f16):.3f}ms")
+                print(f"Speedup: {np.mean(time_decode_f16) / np.mean(time_decode_i4):.3f}x")
 
             print('---------------------------------------------------------------------')
             print(f"E2E Int4 time: {np.mean(time_e2e_i4):.3f} +- {1.96 * np.std(time_e2e_i4):.3f}ms")
-            print(f"E2E FP16 time: {np.mean(time_e2e_f16):.3f} +- {1.96 * np.std(time_e2e_f16):.3f}ms")
-            print(f"Speedup: {np.mean(time_e2e_f16) / np.mean(time_e2e_i4):.3f}x")
+            if time_e2e_f16 is not None:
+                print(f"E2E FP16 time: {np.mean(time_e2e_f16):.3f} +- {1.96 * np.std(time_e2e_f16):.3f}ms")
+                print(f"Speedup: {np.mean(time_e2e_f16) / np.mean(time_e2e_i4):.3f}x")
 
         # table-style output
         print('---------------------------------------------------------------------')
         if mem_i4 is not None:
             print(f"Int4 memory: {np.mean(mem_i4) / (1024 * 1024 * 1024):.3f}GB +- {1.96 * np.std(mem_i4):.3f}")
-            print(f"FP16 memory: {np.mean(mem_f16) / (1024 * 1024 * 1024):.3f}GB +- {1.96 * np.std(mem_f16):.3f}")
-            print(f"Memory saving: {np.mean(mem_f16) / np.mean(mem_i4):.3f}x")
+            if mem_f16 is not None:
+                print(f"FP16 memory: {np.mean(mem_f16) / (1024 * 1024 * 1024):.3f}GB +- {1.96 * np.std(mem_f16):.3f}")
+                print(f"Memory saving: {np.mean(mem_f16) / np.mean(mem_i4):.3f}x")
 
         print('---------------------------------------------------------------------')
 
@@ -199,6 +207,10 @@ if __name__ == '__main__':
         help='Decode steps',
         required=False,
         default=None,
+    )
+    parser.add_argument(
+        '--int4_only', '--int4-only', action='store_true',
+        help='Benchmark only INT4 and do not load the FP16 comparison model.',
     )
 
     args = parser.parse_args()
