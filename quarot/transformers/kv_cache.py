@@ -215,15 +215,21 @@ class MultiLayerPagedKVCache4Bit(Cache):
         orig_key_states = key_states
         orig_value_states = value_states
 
-        if self.cache_heads != num_heads:
+        use_fused_append = (
+            not self.disable_quant and not self._needs_init[layer_idx] and added_length == 1
+        )
+
+        # Keep prefill in the model's native KV-head layout through Hadamard and
+        # INT4 packing. CodeLlama-34B has 8 KV heads but 64 query heads;
+        # expanding FP16 K/V first creates two 2 GiB temporaries for B=8,
+        # S=2048 and can exhaust a 32 GiB device. The current decode kernel
+        # still requires an MHA-layout cache, so replicate only the packed
+        # values and their small quantization parameters below.
+        if use_fused_append and self.cache_heads != num_heads:
             repeats = self.cache_heads // num_heads
             key_states = key_states.repeat_interleave(repeats, dim=2)
             value_states = value_states.repeat_interleave(repeats, dim=2)
             num_heads = self.cache_heads
-
-        use_fused_append = (
-            not self.disable_quant and not self._needs_init[layer_idx] and added_length == 1
-        )
 
         if not use_fused_append and self.hadamard_dtype is not None:
             key_states = matmul_had_HIP(key_states, dtype=self.hadamard_dtype)
@@ -241,6 +247,16 @@ class MultiLayerPagedKVCache4Bit(Cache):
             key_states, k_scale, k_zero = asym_quantize_and_pack_i4(key_states)
             value_states, v_scale, v_zero = asym_quantize_and_pack_i4(value_states)
         
+        if not use_fused_append and self.cache_heads != num_heads:
+            repeats = self.cache_heads // num_heads
+            key_states = key_states.repeat_interleave(repeats, dim=2)
+            value_states = value_states.repeat_interleave(repeats, dim=2)
+            k_scale = k_scale.repeat_interleave(repeats, dim=2)
+            k_zero = k_zero.repeat_interleave(repeats, dim=2)
+            v_scale = v_scale.repeat_interleave(repeats, dim=2)
+            v_zero = v_zero.repeat_interleave(repeats, dim=2)
+            num_heads = self.cache_heads
+
         if not use_fused_append:
             k_param = torch.cat([k_scale, k_zero], dim=-1).view(self.batch_size * added_length, num_heads, 2)
             v_param = torch.cat([v_scale, v_zero], dim=-1).view(self.batch_size * added_length, num_heads, 2)

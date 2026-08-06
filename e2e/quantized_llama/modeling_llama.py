@@ -52,16 +52,23 @@ class QuarotFP16LlamaAttention(LlamaFlashAttention2):
         value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim)
 
         kv_seq_len = key_states.shape[1]
-        kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
+        if past_key_value is not None:
+            kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
         cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids, unsqueeze_dim=2)
 
         past_key_value = getattr(self, "past_key_value", past_key_value)
-        assert past_key_value is not None
-        # sin and cos are specific to RoPE models; position_ids needed for the static cache
-        
-        cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position, "attention_mask": attention_mask}
-        cache_out = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
+        if past_key_value is None:
+            # Standalone prefill with use_cache=False: FlashAttention can consume
+            # K/V directly, avoiding allocation of the multi-layer paged cache.
+            cache_out = (key_states, value_states)
+        else:
+            # sin and cos are specific to RoPE models; position_ids are needed
+            # by cache implementations that apply rotary metadata internally.
+            cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position,
+                            "attention_mask": attention_mask}
+            cache_out = past_key_value.update(
+                key_states, value_states, self.layer_idx, cache_kwargs)
         
 
         dropout_rate = self.attention_dropout if self.training else 0.0
@@ -201,7 +208,8 @@ class QuarotFP16LlamaForCausalLM(LlamaForCausalLM):
 
 
     def forward(self, input_ids, *args, past_key_values=None, **kwargs):
-        if past_key_values is None:
+        use_cache = kwargs.get("use_cache", True)
+        if past_key_values is None and use_cache:
             max_length = self._expected_max_length or input_ids.shape[1]
             self._expected_max_length = None # Reset this value.
             past_key_values = self.build_cache(

@@ -175,3 +175,32 @@ def test_fused_ffn_generalized_llama2_7b_width():
     torch.cuda.synchronize()
     assert torch.equal(packed, _pack_s4(expected, expected_scale))
     assert torch.equal(scale, expected_scale)
+
+
+def test_gqa_prefill_quantizes_before_cache_head_expansion(monkeypatch):
+    import quarot.transformers.kv_cache as kv_cache
+
+    observed_heads = []
+    original_quantize = kv_cache.asym_quantize_and_pack_i4
+
+    def recording_quantize(x):
+        observed_heads.append(x.shape[2])
+        return original_quantize(x)
+
+    monkeypatch.setattr(kv_cache, "asym_quantize_and_pack_i4", recording_quantize)
+    cache = kv_cache.MultiLayerPagedKVCache4Bit(
+        batch_size=2, page_size=16, max_seq_len=16, device="cuda",
+        n_layers=1, num_heads=4, num_kv_heads=2, head_dim=128)
+    torch.manual_seed(3408)
+    key = torch.randn(2, 16, 2, 128, device="cuda", dtype=torch.float16)
+    value = torch.randn_like(key)
+    returned_key, returned_value = cache.update(key, value, 0, {})
+    torch.cuda.synchronize()
+
+    assert observed_heads == [2, 2]
+    assert returned_key is key and returned_value is value
+    for plane in (0, 1):
+        assert torch.equal(cache.pages[:, 0, plane, 0], cache.pages[:, 0, plane, 1])
+        assert torch.equal(cache.pages[:, 0, plane, 2], cache.pages[:, 0, plane, 3])
+        assert torch.equal(cache.scales[:, 0, plane, 0], cache.scales[:, 0, plane, 1])
+        assert torch.equal(cache.scales[:, 0, plane, 2], cache.scales[:, 0, plane, 3])

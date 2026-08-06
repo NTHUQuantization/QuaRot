@@ -19,6 +19,7 @@ model_configs = [
 benchmark_dtypes = ["int4", torch.float16]
 num_warmup_steps = 3
 num_bench_steps = 5
+memory_safe_cleanup = False
 
 def repeated_run(num_repeats=3):
     def func(module):
@@ -36,29 +37,33 @@ def _cleanup():
 
 @repeated_run()
 def module_benchmark(module):
-    # warmup
-    for i in range(num_warmup_steps):
+    # Warm up kernels and libraries. For memory-heavy cases, release only
+    # unused allocator blocks between complete forwards.
+    for _ in range(num_warmup_steps):
         out = module()
-        # Avoid retaining logits/KV caches while the next iteration runs.
+        torch.cuda.synchronize()
         del out
-    torch.cuda.synchronize()
+        if memory_safe_cleanup:
+            _cleanup()
 
-    # Preserve allocator warm-up while collecting unreachable Python state.
     gc.collect()
-    torch.cuda.reset_max_memory_allocated()
-    start_time = time.perf_counter()
-
-
-    for i in range(num_bench_steps):
+    torch.cuda.reset_peak_memory_stats()
+    elapsed_ms = []
+    peak_memory = torch.cuda.memory_allocated()
+    for _ in range(num_bench_steps):
+        # Synchronization makes each wall-clock interval GPU-complete. Cleanup
+        # happens after the end timestamp and is excluded from reported latency.
+        torch.cuda.synchronize()
+        start_time = time.perf_counter()
         out = module()
-        # Measured iterations are independent; outputs must not accumulate.
+        torch.cuda.synchronize()
+        elapsed_ms.append((time.perf_counter() - start_time) * 1000)
+        peak_memory = max(peak_memory, torch.cuda.max_memory_allocated())
         del out
-    torch.cuda.synchronize()
-    peak_memory = torch.cuda.max_memory_allocated()
+        if memory_safe_cleanup:
+            _cleanup()
 
-    end_time = time.perf_counter()
-
-    return (end_time - start_time) * 1000 / num_bench_steps, peak_memory
+    return np.mean(elapsed_ms), peak_memory
 
 
 def get_model_quantized(config_name):
@@ -131,18 +136,32 @@ def _wait_for_input():
 def run_all_for_model(model, bsz, prefill, decode):
     model.eval()
     model = model.cuda()
+    print(f"[benchmark] prefill start: B={bsz}, S={prefill}", flush=True)
     time_prefill, _ = run_prefill(model, bsz, prefill)
+    print(f"[benchmark] prefill complete: {torch.cuda.max_memory_allocated() / 2**30:.2f} GiB peak", flush=True)
     _cleanup()
     if decode is not None:
+        print(f"[benchmark] decode start: B={bsz}, cache={prefill}, steps={decode}", flush=True)
         time_decode, memory_decode = run_decode(model, bsz, prefill, decode)
+        print(f"[benchmark] decode complete: {torch.cuda.max_memory_allocated() / 2**30:.2f} GiB peak", flush=True)
         _cleanup()
+        print(f"[benchmark] e2e start: B={bsz}, S={prefill}, steps={decode}", flush=True)
         time_e2e, _ = run_e2e(model, bsz, prefill, decode)
+        print(f"[benchmark] e2e complete: {torch.cuda.max_memory_allocated() / 2**30:.2f} GiB peak", flush=True)
         _cleanup()
     else:
         time_decode = time_e2e = memory_decode = None
     return time_prefill, time_decode, time_e2e, memory_decode
 
 def benchmark(args):
+    global memory_safe_cleanup
+    memory_safe_cleanup = (
+        args.memory_safe_cleanup or
+        args.batch_size * args.prefill_seq_len >= 16384
+    )
+    if memory_safe_cleanup:
+        print("Memory-safe cleanup enabled between complete benchmark forwards.",
+              flush=True)
 
     for config_name in model_configs:
         model = get_model_quantized(config_name)
@@ -211,6 +230,11 @@ if __name__ == '__main__':
     parser.add_argument(
         '--int4_only', '--int4-only', action='store_true',
         help='Benchmark only INT4 and do not load the FP16 comparison model.',
+    )
+    parser.add_argument(
+        '--memory_safe_cleanup', '--memory-safe-cleanup',
+        action='store_true',
+        help='Release unused GPU allocator blocks between complete forwards.',
     )
 
     args = parser.parse_args()

@@ -117,11 +117,11 @@ __global__ void fused_append_kv_i4_kernel(
   if ((tid & 1) == 0) {
     int q0 = max(0, min(15, static_cast<int>(nearbyintf((k_values[tid] + kzero) / kscale))));
     int q1 = max(0, min(15, static_cast<int>(nearbyintf((k_values[tid + 1] + kzero) / kscale))));
-    size_t index = (((page * num_layers + layer_idx) * 2 * num_heads + head) * page_size + slot) * (kHeadDim / 2) + (tid >> 1);
+    size_t index = (((static_cast<size_t>(page) * num_layers + layer_idx) * 2 * num_heads + head) * page_size + slot) * (kHeadDim / 2) + (tid >> 1);
     kv_data[index] = pack_u4_pair(q0, q1);
   }
   if (tid == 0) {
-    size_t index = ((page * num_layers + layer_idx) * 2 * num_heads + head) * page_size + slot;
+    size_t index = ((static_cast<size_t>(page) * num_layers + layer_idx) * 2 * num_heads + head) * page_size + slot;
     kv_param[index] = __halves2half2(kscale_h, kzero_h);
   }
   __syncthreads();
@@ -139,11 +139,11 @@ __global__ void fused_append_kv_i4_kernel(
   if ((tid & 1) == 0) {
     int q0 = max(0, min(15, static_cast<int>(nearbyintf((v_values[tid] + vzero) / vscale))));
     int q1 = max(0, min(15, static_cast<int>(nearbyintf((v_values[tid + 1] + vzero) / vscale))));
-    size_t index = ((((page * num_layers + layer_idx) * 2 + 1) * num_heads + head) * page_size + slot) * (kHeadDim / 2) + (tid >> 1);
+    size_t index = ((((static_cast<size_t>(page) * num_layers + layer_idx) * 2 + 1) * num_heads + head) * page_size + slot) * (kHeadDim / 2) + (tid >> 1);
     kv_data[index] = pack_u4_pair(q0, q1);
   }
   if (tid == 0) {
-    size_t index = (((page * num_layers + layer_idx) * 2 + 1) * num_heads + head) * page_size + slot;
+    size_t index = (((static_cast<size_t>(page) * num_layers + layer_idx) * 2 + 1) * num_heads + head) * page_size + slot;
     kv_param[index] = __halves2half2(vscale_h, vzero_h);
   }
 }
