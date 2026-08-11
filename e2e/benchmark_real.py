@@ -8,7 +8,6 @@ import argparse
 import gc
 import json
 import math
-import os
 import statistics
 import sys
 import time
@@ -18,8 +17,9 @@ import torch
 import transformers
 
 if __package__ in (None, ""):
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-from quantized_llama import modeling_llama
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from e2e.model_registry import runtime_types
 import quarot
 
 
@@ -97,17 +97,19 @@ def validate_int4_checkpoint(model, checkpoint):
 
 
 def load_int4(path):
-    config = modeling_llama.QuarotLlamaConfig.from_pretrained(
+    config_cls, int4_cls, _ = runtime_types(path, local_files_only=True)
+    config = config_cls.from_pretrained(
         path, attn_implementation="flash_attention_2", local_files_only=True)
-    model = modeling_llama.QuarotLlamaForCausalLM.from_pretrained(
+    model = int4_cls.from_pretrained(
         path, config=config, torch_dtype=torch.float16, local_files_only=True)
     return model
 
 
 def load_fp16(path):
-    return modeling_llama.QuarotFP16LlamaForCausalLM.from_pretrained(
+    _, _, fp16_cls = runtime_types(path)
+    return fp16_cls.from_pretrained(
         path, torch_dtype=torch.float16,
-        attn_implementation="flash_attention_2", local_files_only=True)
+        attn_implementation="flash_attention_2")
 
 
 @torch.inference_mode()
@@ -192,7 +194,7 @@ def benchmark_model(model, args, tokens):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--int4-model", required=True, help="real converted QuaRot checkpoint")
-    parser.add_argument("--fp16-model", default="meta-llama/Llama-2-7b-hf")
+    parser.add_argument("--fp16-model", required=True)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--prefill-seq-len", type=int, default=2048)
     parser.add_argument("--decode-steps", type=int, default=128)
@@ -216,12 +218,23 @@ def main():
                     torch.cuda.get_device_properties(0).gcnArchName),
             "int4_model": str(Path(args.int4_model).resolve()),
             "fp16_model": args.fp16_model,
-            "fused_ffn_max_rows": os.environ.get("QUAROT_FUSED_FFN_MAX_ROWS", "64"),
         },
         "configuration": vars(args), "failures": [],
     }
 
     int4 = load_int4(args.int4_model)
+    layers = list(int4.model.layers)
+    prefill_probe = torch.empty(1, args.prefill_seq_len, 1)
+    decode_probe = torch.empty(1, 1, 1)
+    results["fusion_dispatch"] = {
+        "attention_output_all_layers": all(
+            layer.self_attn._fused_attention_output for layer in layers),
+        "ffn_prefill_all_layers": all(
+            layer.mlp._should_use_fused_ffn(prefill_probe) for layer in layers),
+        "ffn_decode_all_layers": all(
+            layer.mlp._should_use_fused_ffn(decode_probe) for layer in layers),
+        "kv_decode_append_after_prefill": int4.cache_dtype == "int4",
+    }
     results["int4_checkpoint_validation"] = validate_int4_checkpoint(int4, args.int4_model)
     int4.cuda().eval()
     correctness_tokens = deterministic_tokens(args.batch_size, args.correctness_prefill,

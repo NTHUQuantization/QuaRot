@@ -1,8 +1,7 @@
 import math
 
 import torch
-from hadacore_for_hip import hadacore
-
+from fast_hadamard_transform import hadamard_transform
 
 def ref_hadamard(x):
     shape = x.shape
@@ -33,7 +32,7 @@ def tolerance(dtype):
 def check(rows, n, dtype):
     x = torch.randn((rows, n), device="cuda", dtype=dtype)
     scale = 1.0 / math.sqrt(float(n))
-    got = hadacore(x, scale).float()
+    got = hadamard_transform(x, scale).float()
     ref = ref_hadamard(x)
     diff = (got - ref).abs().max().item()
     print(f"rows={rows:4d} n={n:5d} dtype={str(dtype):14s} max_diff={diff:.6g}")
@@ -45,7 +44,7 @@ def check_shape(shape, dtype):
     x = torch.randn(shape, device="cuda", dtype=dtype)
     n = shape[-1]
     scale = 1.0 / math.sqrt(float(n))
-    got = hadacore(x, scale).float()
+    got = hadamard_transform(x, scale).float()
     ref = ref_hadamard(x)
     diff = (got - ref).abs().max().item()
     print(f"shape={str(shape):18s} dtype={str(dtype):14s} max_diff={diff:.6g}")
@@ -56,7 +55,7 @@ def check_shape(shape, dtype):
 def check_twice(n, dtype):
     x = torch.randn((n,), device="cuda", dtype=dtype)
     scale = 1.0 / math.sqrt(float(n))
-    got = hadacore(hadacore(x, scale), scale).float()
+    got = hadamard_transform(hadamard_transform(x, scale), scale).float()
     diff = (got - x.float()).abs().max().item()
     print(f"twice n={n:5d} dtype={str(dtype):14s} max_diff={diff:.6g}")
     if not torch.allclose(got, x.float(), atol=tolerance(dtype), rtol=0):
@@ -82,7 +81,7 @@ def main():
     for n in [32, 64, 128, 256, 4096]:
         check_twice(n, torch.float16)
 
-    print("All hadacore tests passed.")
+    print("All hadamard_transform tests passed.")
 
 
 if __name__ == "__main__":

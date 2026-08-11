@@ -207,6 +207,35 @@ constexpr size_t vec_size = (vec_size_a > vec_size_b ? vec_size_a : vec_size_b);
 }
 
 
+template void FlashInferBatchDecodeKernel_i4<64>(
+    __half* o, __half* q, void* kv_data, __half2* kv_param,
+    int32_t* kv_indptr, int32_t* kv_indicies, int32_t* last_page_offset,
+    int num_layers, int layer_idx, int num_heads, int page_size, int batch_size);
+template void FlashInferInitKvKernel_i4<64>(
+    void* kv_data, __half2* kv_param, int32_t* kv_indptr, int32_t* kv_indicies,
+    int32_t* last_page_offset, void* key, void* value, __half2* key_param,
+    __half2* value_param, int32_t* seqlen_indptr, int num_layers,
+    int layer_idx, int num_heads, int page_size, int batch_size);
+template void FlashInferAppendKvKernel_i4<64>(
+    void* kv_data, __half2* kv_param, int32_t* kv_indptr, int32_t* kv_indicies,
+    int32_t* last_page_offset, void* key, void* value, __half2* key_param,
+    __half2* value_param, int num_layers, int layer_idx, int num_heads,
+    int page_size, int batch_size);
+template void FlashInferBatchDecodeKernel_f16<64>(
+    __half* o, __half* q, void* kv_data, __half2* kv_param,
+    int32_t* kv_indptr, int32_t* kv_indicies, int32_t* last_page_offset,
+    int num_layers, int layer_idx, int num_heads, int page_size, int batch_size);
+template void FlashInferInitKvKernel_f16<64>(
+    void* kv_data, __half2* kv_param, int32_t* kv_indptr, int32_t* kv_indicies,
+    int32_t* last_page_offset, void* key, void* value, __half2* key_param,
+    __half2* value_param, int32_t* seqlen_indptr, int num_layers,
+    int layer_idx, int num_heads, int page_size, int batch_size);
+template void FlashInferAppendKvKernel_f16<64>(
+    void* kv_data, __half2* kv_param, int32_t* kv_indptr, int32_t* kv_indicies,
+    int32_t* last_page_offset, void* key, void* value, __half2* key_param,
+    __half2* value_param, int num_layers, int layer_idx, int num_heads,
+    int page_size, int batch_size);
+
 template void FlashInferBatchDecodeKernel_i4<128>(
     __half* o, __half* q, void* kv_data, __half2* kv_param,
     int32_t* kv_indptr, int32_t* kv_indicies, int32_t* last_page_offset,

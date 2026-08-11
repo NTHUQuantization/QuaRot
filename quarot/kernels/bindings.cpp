@@ -180,14 +180,19 @@ void batch_decode_i4(torch::Tensor o, torch::Tensor q, torch::Tensor kv_data,
   CHECK_SHAPE(o, q);
   CHECK_EQ(kv_indptr.size(0), batch_size + 1);
   CHECK_EQ(last_page_offset.size(0), batch_size);
-  CHECK_EQ(head_dim, 128);
+  TORCH_CHECK(head_dim == 64 || head_dim == 128, "head_dim must be 64 or 128");
 
-  FlashInferBatchDecodeKernel_i4<128>(
+  if (head_dim == 64) { FlashInferBatchDecodeKernel_i4<64>(
       (__half *)o.data_ptr(), (__half *)q.data_ptr(),
       (void *)kv_data.data_ptr(), (__half2 *)kv_param.data_ptr(),
       kv_indptr.data_ptr<int32_t>(), kv_indicies.data_ptr<int32_t>(),
       last_page_offset.data_ptr<int32_t>(), num_layers, layer_idx, num_heads,
-      page_size, batch_size);
+      page_size, batch_size); } else { FlashInferBatchDecodeKernel_i4<128>(
+      (__half *)o.data_ptr(), (__half *)q.data_ptr(),
+      (void *)kv_data.data_ptr(), (__half2 *)kv_param.data_ptr(),
+      kv_indptr.data_ptr<int32_t>(), kv_indicies.data_ptr<int32_t>(),
+      last_page_offset.data_ptr<int32_t>(), num_layers, layer_idx, num_heads,
+      page_size, batch_size); }
 }
 
 void init_kv_i4(torch::Tensor kv_data, torch::Tensor kv_param,
@@ -224,15 +229,21 @@ void init_kv_i4(torch::Tensor kv_data, torch::Tensor kv_param,
   int batch_size = static_cast<int>(last_page_offset.size(0));
   CHECK_EQ(kv_indptr.size(0), batch_size + 1);
   CHECK_EQ(seqlen_indptr.size(0), batch_size + 1);
-  CHECK_EQ(head_dim, 128);
+  TORCH_CHECK(head_dim == 64 || head_dim == 128, "head_dim must be 64 or 128");
 
-  FlashInferInitKvKernel_i4<128>(
+  if (head_dim == 64) { FlashInferInitKvKernel_i4<64>(
       (void *)kv_data.data_ptr(), (__half2 *)kv_param.data_ptr(),
       kv_indptr.data_ptr<int32_t>(), kv_indicies.data_ptr<int32_t>(),
       last_page_offset.data_ptr<int32_t>(), (void *)k.data_ptr(),
       (void *)v.data_ptr(), (__half2 *)k_param.data_ptr(),
       (__half2 *)v_param.data_ptr(), seqlen_indptr.data_ptr<int32_t>(),
-      num_layers, layer_idx, num_heads, page_size, batch_size);
+      num_layers, layer_idx, num_heads, page_size, batch_size); } else { FlashInferInitKvKernel_i4<128>(
+      (void *)kv_data.data_ptr(), (__half2 *)kv_param.data_ptr(),
+      kv_indptr.data_ptr<int32_t>(), kv_indicies.data_ptr<int32_t>(),
+      last_page_offset.data_ptr<int32_t>(), (void *)k.data_ptr(),
+      (void *)v.data_ptr(), (__half2 *)k_param.data_ptr(),
+      (__half2 *)v_param.data_ptr(), seqlen_indptr.data_ptr<int32_t>(),
+      num_layers, layer_idx, num_heads, page_size, batch_size); }
 }
 
 void append_kv_i4(torch::Tensor kv_data, torch::Tensor kv_param,
@@ -268,15 +279,21 @@ void append_kv_i4(torch::Tensor kv_data, torch::Tensor kv_param,
   CHECK_EQ(kv_indptr.size(0), batch_size + 1);
   CHECK_EQ(last_page_offset.size(0), batch_size);
   CHECK_SHAPE(k, v);
-  CHECK_EQ(head_dim, 128);
+  TORCH_CHECK(head_dim == 64 || head_dim == 128, "head_dim must be 64 or 128");
 
-  FlashInferAppendKvKernel_i4<128>(
+  if (head_dim == 64) { FlashInferAppendKvKernel_i4<64>(
       (void *)kv_data.data_ptr(), (__half2 *)kv_param.data_ptr(),
       kv_indptr.data_ptr<int32_t>(), kv_indicies.data_ptr<int32_t>(),
       last_page_offset.data_ptr<int32_t>(), (void *)k.data_ptr(),
       (void *)v.data_ptr(), (__half2 *)k_param.data_ptr(),
       (__half2 *)v_param.data_ptr(), num_layers, layer_idx, num_heads,
-      page_size, batch_size);
+      page_size, batch_size); } else { FlashInferAppendKvKernel_i4<128>(
+      (void *)kv_data.data_ptr(), (__half2 *)kv_param.data_ptr(),
+      kv_indptr.data_ptr<int32_t>(), kv_indicies.data_ptr<int32_t>(),
+      last_page_offset.data_ptr<int32_t>(), (void *)k.data_ptr(),
+      (void *)v.data_ptr(), (__half2 *)k_param.data_ptr(),
+      (__half2 *)v_param.data_ptr(), num_layers, layer_idx, num_heads,
+      page_size, batch_size); }
 }
 
 void batch_decode_f16(torch::Tensor o, torch::Tensor q, torch::Tensor kv_data,
@@ -309,13 +326,18 @@ void batch_decode_f16(torch::Tensor o, torch::Tensor q, torch::Tensor kv_data,
   CHECK_SHAPE(o, q);
   CHECK_EQ(kv_indptr.size(0), batch_size + 1);
   CHECK_EQ(last_page_offset.size(0), batch_size);
-  CHECK_EQ(head_dim, 128);
-  FlashInferBatchDecodeKernel_f16<128>(
+  TORCH_CHECK(head_dim == 64 || head_dim == 128, "head_dim must be 64 or 128");
+  if (head_dim == 64) { FlashInferBatchDecodeKernel_f16<64>(
       (__half *)o.data_ptr(), (__half *)q.data_ptr(),
       (void *)kv_data.data_ptr(), (__half2 *)kv_param.data_ptr(),
       kv_indptr.data_ptr<int32_t>(), kv_indicies.data_ptr<int32_t>(),
       last_page_offset.data_ptr<int32_t>(), num_layers, layer_idx, num_heads,
-      page_size, batch_size);
+      page_size, batch_size); } else { FlashInferBatchDecodeKernel_f16<128>(
+      (__half *)o.data_ptr(), (__half *)q.data_ptr(),
+      (void *)kv_data.data_ptr(), (__half2 *)kv_param.data_ptr(),
+      kv_indptr.data_ptr<int32_t>(), kv_indicies.data_ptr<int32_t>(),
+      last_page_offset.data_ptr<int32_t>(), num_layers, layer_idx, num_heads,
+      page_size, batch_size); }
 }
 
 void init_kv_f16(torch::Tensor kv_data, torch::Tensor kv_param,
@@ -352,15 +374,21 @@ void init_kv_f16(torch::Tensor kv_data, torch::Tensor kv_param,
   int batch_size = static_cast<int>(last_page_offset.size(0));
   CHECK_EQ(kv_indptr.size(0), batch_size + 1);
   CHECK_EQ(seqlen_indptr.size(0), batch_size + 1);
-  CHECK_EQ(head_dim, 128);
+  TORCH_CHECK(head_dim == 64 || head_dim == 128, "head_dim must be 64 or 128");
 
-  FlashInferInitKvKernel_f16<128>(
+  if (head_dim == 64) { FlashInferInitKvKernel_f16<64>(
       (void *)kv_data.data_ptr(), (__half2 *)kv_param.data_ptr(),
       kv_indptr.data_ptr<int32_t>(), kv_indicies.data_ptr<int32_t>(),
       last_page_offset.data_ptr<int32_t>(), (void *)k.data_ptr(),
       (void *)v.data_ptr(), (__half2 *)k_param.data_ptr(),
       (__half2 *)v_param.data_ptr(), seqlen_indptr.data_ptr<int32_t>(),
-      num_layers, layer_idx, num_heads, page_size, batch_size);
+      num_layers, layer_idx, num_heads, page_size, batch_size); } else { FlashInferInitKvKernel_f16<128>(
+      (void *)kv_data.data_ptr(), (__half2 *)kv_param.data_ptr(),
+      kv_indptr.data_ptr<int32_t>(), kv_indicies.data_ptr<int32_t>(),
+      last_page_offset.data_ptr<int32_t>(), (void *)k.data_ptr(),
+      (void *)v.data_ptr(), (__half2 *)k_param.data_ptr(),
+      (__half2 *)v_param.data_ptr(), seqlen_indptr.data_ptr<int32_t>(),
+      num_layers, layer_idx, num_heads, page_size, batch_size); }
 }
 
 void append_kv_f16(torch::Tensor kv_data, torch::Tensor kv_param,
@@ -397,15 +425,21 @@ void append_kv_f16(torch::Tensor kv_data, torch::Tensor kv_param,
   CHECK_EQ(kv_indptr.size(0), batch_size + 1);
   CHECK_EQ(last_page_offset.size(0), batch_size);
   CHECK_SHAPE(k, v);
-  CHECK_EQ(head_dim, 128);
+  TORCH_CHECK(head_dim == 64 || head_dim == 128, "head_dim must be 64 or 128");
 
-  FlashInferAppendKvKernel_f16<128>(
+  if (head_dim == 64) { FlashInferAppendKvKernel_f16<64>(
       (void *)kv_data.data_ptr(), (__half2 *)kv_param.data_ptr(),
       kv_indptr.data_ptr<int32_t>(), kv_indicies.data_ptr<int32_t>(),
       last_page_offset.data_ptr<int32_t>(), (void *)k.data_ptr(),
       (void *)v.data_ptr(), (__half2 *)k_param.data_ptr(),
       (__half2 *)v_param.data_ptr(), num_layers, layer_idx, num_heads,
-      page_size, batch_size);
+      page_size, batch_size); } else { FlashInferAppendKvKernel_f16<128>(
+      (void *)kv_data.data_ptr(), (__half2 *)kv_param.data_ptr(),
+      kv_indptr.data_ptr<int32_t>(), kv_indicies.data_ptr<int32_t>(),
+      last_page_offset.data_ptr<int32_t>(), (void *)k.data_ptr(),
+      (void *)v.data_ptr(), (__half2 *)k_param.data_ptr(),
+      (__half2 *)v_param.data_ptr(), num_layers, layer_idx, num_heads,
+      page_size, batch_size); }
 }
 
 
@@ -459,7 +493,11 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m
     m.def("append_kv_f16", &append_kv_f16, "");
     m.def("fused_append_kv_i4", &fused_append_kv_i4, "Fused Hadamard, asymmetric INT4 quantization, and paged KV-cache append");
     m.def("fused_attention_hadamard_quant", &fused_attention_hadamard_quant, "Fused attention-output Hadamard and signed INT4 quantization");
+    m.def("fused_attention_hadamard_quant_general", &fused_attention_hadamard_quant_general, "Fused general attention-output orthogonal transform and INT4 quantization");
     m.def("fused_ffn_silu_hadamard_quant", &fused_ffn_silu_hadamard_quant, "Fused SiLU, FFN Hadamard, and signed INT4 quantization");
+    m.def("fused_ffn_silu_hadamard_quant_single_fp16lds",
+          &fused_ffn_silu_hadamard_quant_single_fp16lds,
+          "Single-kernel FP16-LDS SiLU, generalized transform, and INT4 packing");
     m.def("fused_ffn_silu_hadamard_quant_general", &fused_ffn_silu_hadamard_quant_general,
           "Fused SiLU, generalized FFN Hadamard, and signed INT4 quantization");
 

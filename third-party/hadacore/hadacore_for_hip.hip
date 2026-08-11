@@ -2010,6 +2010,50 @@ extern "C" __global__ void hadacore_f16_wmma_le256_kernel(
 #endif
 }
 
+// Dedicated H512 path for CodeLlama. One workgroup owns a row and computes
+// two H256 transforms concurrently. The corresponding half-results are loaded
+// into registers for the outer H2 butterfly, normalization, and FP16 store.
+// This avoids WMMA fragment transposes and any global intermediate.
+extern "C" __global__ void hadacore_f16_h512_direct_kernel(
+    const uint16_t* __restrict__ in,
+    uint16_t* __restrict__ out,
+    int rows
+) {
+    __shared__ float halves[512];
+    const int lane = threadIdx.x;
+    const int row = blockIdx.x;
+    if (row >= rows || lane >= 256) {
+        return;
+    }
+    const uint16_t* in_row = in + static_cast<size_t>(row) * 512;
+    uint16_t* out_row = out + static_cast<size_t>(row) * 512;
+    halves[lane] = static_cast<float>(f16_bits_to_f16(in_row[lane]));
+    halves[256 + lane] =
+        static_cast<float>(f16_bits_to_f16(in_row[256 + lane]));
+    __syncthreads();
+
+#pragma unroll
+    for (int stride = 1; stride < 256; stride <<= 1) {
+        const int low = (lane / stride) * (stride << 1) +
+                        (lane & (stride - 1));
+        const float left_a = halves[low];
+        const float left_b = halves[low + stride];
+        const float right_a = halves[256 + low];
+        const float right_b = halves[256 + low + stride];
+        halves[low] = left_a + left_b;
+        halves[low + stride] = left_a - left_b;
+        halves[256 + low] = right_a + right_b;
+        halves[256 + low + stride] = right_a - right_b;
+        __syncthreads();
+    }
+
+    const float left = halves[lane];
+    const float right = halves[256 + lane];
+    constexpr float scale = 0.04419417382415922f;  // 1/sqrt(512)
+    out_row[lane] = f32_to_f16_bits((left + right) * scale);
+    out_row[256 + lane] = f32_to_f16_bits((left - right) * scale);
+}
+
 extern "C" __global__ void hadacore_f16_wmma_single_store_t_kernel(
     const uint16_t* __restrict__ in,
     uint16_t* __restrict__ out,

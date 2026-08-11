@@ -1,7 +1,0 @@
-binding.hip
-hadacore_for_hip.hip
-setup.py
-hadacore_for_hip.egg-info/PKG-INFO
-hadacore_for_hip.egg-info/SOURCES.txt
-hadacore_for_hip.egg-info/dependency_links.txt
-hadacore_for_hip.egg-info/top_level.txt

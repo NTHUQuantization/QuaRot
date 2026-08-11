@@ -1,7 +1,0 @@
-binding.hip
-hadacore_for_hip.hip
-setup.py
-fast_hadamard_transform.egg-info/PKG-INFO
-fast_hadamard_transform.egg-info/SOURCES.txt
-fast_hadamard_transform.egg-info/dependency_links.txt
-fast_hadamard_transform.egg-info/top_level.txt

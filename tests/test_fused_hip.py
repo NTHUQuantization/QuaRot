@@ -66,13 +66,14 @@ def test_fused_ffn_matches_silu_hadamard_quant(batch, width):
     assert torch.equal(scale, expected_scale)
 
 
+@pytest.mark.parametrize("head_dim", [64, 128])
 @pytest.mark.parametrize("page_size,positions", [(4, [1, 2, 4, 5]), (8, [1, 8, 9])])
-def test_fused_kv_append_writes_target_asymmetric_cache(page_size, positions):
+def test_fused_kv_append_writes_target_asymmetric_cache(head_dim, page_size, positions):
     batch, heads, pages, layers = 2, 4, 2, 1
-    data = torch.empty((batch * pages, layers, 2, heads, page_size, 64), device="cuda", dtype=torch.uint8)
+    data = torch.empty((batch * pages, layers, 2, heads, page_size, head_dim // 2), device="cuda", dtype=torch.uint8)
     params = torch.empty((batch * pages, layers, 2, heads, page_size, 2), device="cuda", dtype=torch.float16)
     for position in positions:
-        key = torch.randn(batch, heads, 128, device="cuda", dtype=torch.float16)
+        key = torch.randn(batch, heads, head_dim, device="cuda", dtype=torch.float16)
         value = torch.randn_like(key)
         current_pages = (position + page_size - 1) // page_size
         indptr = torch.arange(0, batch + 1, device="cuda", dtype=torch.int32) * current_pages
@@ -152,7 +153,7 @@ def test_unsupported_contracts_fail_before_launch():
 def test_fused_ffn_generalized_llama2_7b_width():
     from quarot.functional.hadamard import get_hadK
 
-    width, remainder = 11008, 172
+    width, remainder = 11008, 43
     torch.manual_seed(width)
     gate = torch.randn(1, width, device="cuda", dtype=torch.float16)
     up = torch.randn_like(gate)
@@ -165,16 +166,74 @@ def test_fused_ffn_generalized_llama2_7b_width():
     inner = width // remainder
     values = torch.nn.functional.silu(gate.float()) * up.float()
     values = values.view(-1, remainder, inner)
-    for stride in (1, 2, 4, 8, 16, 32):
+    stride = 1
+    while stride < inner:
         view = values.view(-1, remainder, inner // (2 * stride), 2, stride)
         low, high = view[..., 0, :].clone(), view[..., 1, :].clone()
         view[..., 0, :], view[..., 1, :] = low + high, low - high
+        stride <<= 1
     expected = torch.matmul(hadamard.float(), values).reshape_as(gate) / width**0.5
     expected_scale = (expected.abs().amax(dim=-1, keepdim=True) / 7).half()
     expected_scale.clamp_min_(torch.finfo(torch.float16).tiny)
     torch.cuda.synchronize()
     assert torch.equal(packed, _pack_s4(expected, expected_scale))
     assert torch.equal(scale, expected_scale)
+
+
+
+@pytest.mark.parametrize("width,remainder", [
+    (13824, 27),    # Llama-2 13B: DCT27 x H512
+    (22016, 43),    # CodeLlama 34B: DCT43 x H512
+    (25600, 25),    # Qwen3-32B: DCT25 x H1024
+    (27648, 27),    # Qwen2.5-32B: DCT27 x H1024
+    (28672, 28),    # Llama-2 70B: H28 x H1024
+])
+def test_fused_ffn_generalized_benchmark_widths(width, remainder):
+    from quarot.functional.hadamard import get_hadK
+
+    torch.manual_seed(width)
+    gate = torch.randn(1, width, device="cuda", dtype=torch.float16)
+    up = torch.randn_like(gate)
+    hadamard, order = get_hadK(width)
+    assert order == remainder
+    hadamard = hadamard.to(device="cuda", dtype=torch.float16)
+    packed, scale = _HIP.fused_ffn_silu_hadamard_quant_general(
+        gate, up, hadamard)
+
+    inner = width // remainder
+    values = torch.nn.functional.silu(gate.float()) * up.float()
+    values = _hadamard(
+        values.view(-1, remainder, inner), output_dtype=torch.float32)
+    expected = torch.matmul(hadamard.float(), values).reshape_as(gate)
+    expected /= math.sqrt(remainder)
+    expected_scale = (expected.abs().amax(dim=-1, keepdim=True) / 7).half()
+    expected_scale.clamp_min_(torch.finfo(torch.float16).tiny)
+    torch.cuda.synchronize()
+    assert torch.equal(packed, _pack_s4(expected, expected_scale))
+    assert torch.equal(scale, expected_scale)
+
+
+@pytest.mark.parametrize("width,remainder", [
+    (11008, 43), (13824, 27), (22016, 43),
+    (25600, 25), (27648, 27), (28672, 28),
+])
+def test_single_fp16lds_large_ffn_agrees_with_fp32_contract(width, remainder):
+    from quarot.functional.hadamard import get_hadK, _dct_remainder
+
+    torch.manual_seed(width + 17)
+    gate = torch.randn(1, width, device="cuda", dtype=torch.float16)
+    up = torch.randn_like(gate)
+    matrix = get_hadK(width)[0]
+    matrix = matrix.cuda().half()
+    packed, scale = _HIP.fused_ffn_silu_hadamard_quant_single_fp16lds(
+        gate, up, matrix)
+    reference_packed, reference_scale = (
+        _HIP.fused_ffn_silu_hadamard_quant_general(gate, up, matrix))
+    torch.cuda.synchronize()
+    assert torch.equal(scale, reference_scale)
+    # FP16 LDS intentionally rounds at the inner/remainder boundary. Packed
+    # decisions should remain stable except for values at INT4 thresholds.
+    assert (packed == reference_packed).float().mean().item() >= 0.995
 
 
 def test_gqa_prefill_quantizes_before_cache_head_expansion(monkeypatch):

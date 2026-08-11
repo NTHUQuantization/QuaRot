@@ -131,7 +131,7 @@ class GPTQ:
         self.nsamples = 0
 
     def add_batch(self, inp, out):
-        
+
         if len(inp.shape) == 2:
             inp = inp.unsqueeze(0)
         tmp = inp.shape[0]
@@ -182,10 +182,21 @@ class GPTQ:
         damp = percdamp * torch.mean(torch.diag(H))
         diag = torch.arange(self.columns, device=self.dev)
         H[diag, diag] += damp
-        H = torch.linalg.cholesky(H)
-        H = torch.cholesky_inverse(H)
-        H = torch.linalg.cholesky(H, upper=True)
-        Hinv = H
+        # This ROCm PyTorch build has neither MAGMA nor CPU LAPACK. Use
+        # SciPy's LAPACK for the relatively small per-layer Hessian, then
+        # return the inverse factor to the weight device for GPTQ updates.
+        import numpy as np
+        import scipy.linalg
+        h_device = H.device
+        h_numpy = H.float().cpu().numpy()
+        chol = scipy.linalg.cholesky(
+            h_numpy, lower=True, overwrite_a=True, check_finite=False)
+        inverse = scipy.linalg.cho_solve(
+            (chol, True), np.eye(chol.shape[0], dtype=chol.dtype),
+            overwrite_b=True, check_finite=False)
+        inverse_factor = scipy.linalg.cholesky(
+            inverse, lower=False, overwrite_a=True, check_finite=False)
+        Hinv = torch.from_numpy(inverse_factor).to(h_device)
 
         for i1 in range(0, self.columns, blocksize):
             i2 = min(i1 + blocksize, self.columns)
@@ -243,16 +254,16 @@ class GPTQ:
         torch.cuda.empty_cache()
         gc.collect()
         torch.cuda.empty_cache()
-        
-        
+
+
 @torch.no_grad()
 def gptq_fwrd(model, dataloader, dev, args):
     '''
-    From GPTQ repo 
+    From GPTQ repo
     TODO: Make this function general to support both OPT and LLaMA models
     '''
     logging.info('-----GPTQ Quantization-----')
-    
+
     use_cache = model.config.use_cache
     model.config.use_cache = False
     layers = model.model.layers
@@ -276,6 +287,8 @@ def gptq_fwrd(model, dataloader, dev, args):
             cache['i'] += 1
             cache['attention_mask'] = kwargs['attention_mask']
             cache['position_ids'] = kwargs['position_ids']
+            cache['position_embeddings'] = kwargs.get('position_embeddings')
+            cache['cache_position'] = kwargs.get('cache_position')
             raise ValueError
     layers[0] = Catcher(layers[0])
     for batch in dataloader:
@@ -293,10 +306,12 @@ def gptq_fwrd(model, dataloader, dev, args):
     outs = torch.zeros_like(inps)
     attention_mask = cache['attention_mask']
     position_ids = cache['position_ids']
+    position_embeddings = cache.get('position_embeddings')
+    cache_position = cache.get('cache_position')
 
     quantizers = {}
     sequential = [
-                ['self_attn.k_proj', 'self_attn.v_proj=', 'self_attn.q_proj'],
+                ['self_attn.k_proj', 'self_attn.v_proj', 'self_attn.q_proj'],
                 ['self_attn.o_proj'],
                 ['mlp.up_proj', 'mlp.gate_proj'],
                 ['mlp.down_proj']
@@ -330,7 +345,7 @@ def gptq_fwrd(model, dataloader, dev, args):
             for name in subset:
                 handles.append(subset[name].register_forward_hook(add_batch(name)))
             for j in range(args.nsamples):
-                outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask, position_ids=position_ids)[0]
+                outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask, position_ids=position_ids, position_embeddings=position_embeddings, cache_position=cache_position)[0]
             for h in handles:
                 h.remove()
 
@@ -339,15 +354,16 @@ def gptq_fwrd(model, dataloader, dev, args):
                 gptq[name].fasterquant(
                     percdamp=args.percdamp, groupsize=layer_w_groupsize, actorder=args.act_order, static_groups=False
                 )
-                quantizers['model.layers.%d.%s' % (i, name)] = gptq[name].quantizer
+                quantizers['model.layers.%d.%s' % (i, name)] = (
+                    gptq[name].quantizer.cpu())
                 gptq[name].free()
 
         for j in range(args.nsamples):
-            outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask, position_ids=position_ids)[0]
+            outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask, position_ids=position_ids, position_embeddings=position_embeddings, cache_position=cache_position)[0]
 
         layers[i] = layer.cpu()
         del layer
-        del gptq 
+        del gptq
         torch.cuda.empty_cache()
 
         inps, outs = outs, inps
@@ -360,11 +376,11 @@ def gptq_fwrd(model, dataloader, dev, args):
 
 
 
-       
+
 @torch.no_grad()
 def rtn_fwrd(model, dev, args):
     '''
-    From GPTQ repo 
+    From GPTQ repo
     TODO: Make this function general to support both OPT and LLaMA models
     '''
     assert args.w_groupsize ==-1, "Groupsize not supported in RTN!"
@@ -396,7 +412,7 @@ def rtn_fwrd(model, dev, args):
         layers[i] = layer.cpu()
         torch.cuda.empty_cache()
         del layer
-            
+
     gc.collect()
     torch.cuda.empty_cache()
     return quantizers

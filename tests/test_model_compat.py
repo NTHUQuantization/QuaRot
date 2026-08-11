@@ -1,0 +1,93 @@
+import pytest
+import torch
+from transformers import LlamaConfig, Qwen2Config, Qwen3Config
+from quarot.functional.hadamard import get_hadK
+from e2e.quantized_common import config_head_dim
+from e2e.quantized_llama.modeling_llama import (
+    QuarotFP16LlamaForCausalLM, QuarotLlamaForCausalLM)
+from e2e.quantized_qwen2.modeling_qwen2 import QuarotQwen2ForCausalLM
+from e2e.quantized_qwen3.modeling_qwen3 import QuarotQwen3ForCausalLM
+
+@pytest.mark.parametrize("width", [
+    4096, 5120, 8192, 11008, 13824, 22016, 28672,
+    4864, 8960, 18944, 29568, 3072, 6144, 9728, 12288, 17408, 25600,
+    12, 14, 28, 32, 40, 64,
+])
+def test_supported_model_hadamards_are_orthogonal(width):
+    matrix, order = get_hadK(width)
+    assert width % order == 0
+    assert (width // order) & (width // order - 1) == 0
+    if matrix is not None:
+        identity = torch.eye(order) * order
+        assert torch.allclose(matrix @ matrix.T, identity, atol=2e-4 * order)
+
+@pytest.mark.parametrize("config_cls,model_cls,extra", [
+    (LlamaConfig, QuarotLlamaForCausalLM, {}),
+    (Qwen2Config, QuarotQwen2ForCausalLM, {}),
+    (Qwen3Config, QuarotQwen3ForCausalLM, {"head_dim": 64}),
+])
+def test_dense_runtime_construction(config_cls, model_cls, extra):
+    config = config_cls(
+        vocab_size=128, hidden_size=128, intermediate_size=256,
+        num_hidden_layers=1, num_attention_heads=2,
+        num_key_value_heads=1, max_position_embeddings=128, **extra)
+    config._attn_implementation = "flash_attention_2"
+    with torch.device("meta"):
+        model = model_cls(config)
+    attention = model.model.layers[0].self_attn
+    assert config_head_dim(config) == attention.head_dim
+    assert attention.num_key_value_heads == 1
+    if config_cls is Qwen3Config:
+        assert hasattr(attention, "q_norm") and hasattr(attention, "k_norm")
+
+
+def test_fp16_reference_does_not_apply_rotated_output_hadamard():
+    config = LlamaConfig(
+        vocab_size=128, hidden_size=128, intermediate_size=256,
+        num_hidden_layers=1, num_attention_heads=2,
+        num_key_value_heads=1, max_position_embeddings=128)
+    config._attn_implementation = "flash_attention_2"
+    with torch.device("meta"):
+        model = QuarotFP16LlamaForCausalLM(config)
+    assert not model.model.layers[0].self_attn._quarot_quantized
+
+
+@pytest.mark.parametrize("config_cls,model_cls,hidden,ffn,heads,kv_heads", [
+    (LlamaConfig, QuarotLlamaForCausalLM, 4096, 11008, 32, 32),
+    (LlamaConfig, QuarotLlamaForCausalLM, 5120, 13824, 40, 40),
+    (LlamaConfig, QuarotLlamaForCausalLM, 8192, 28672, 64, 8),
+    (LlamaConfig, QuarotLlamaForCausalLM, 8192, 22016, 64, 8),
+    (Qwen3Config, QuarotQwen3ForCausalLM, 5120, 25600, 64, 8),
+    (Qwen2Config, QuarotQwen2ForCausalLM, 5120, 27648, 40, 8),
+])
+def test_benchmark_models_select_int4_fusions(
+        config_cls, model_cls, hidden, ffn, heads, kv_heads):
+    kwargs = dict(
+        vocab_size=128, hidden_size=hidden, intermediate_size=ffn,
+        num_hidden_layers=1, num_attention_heads=heads,
+        num_key_value_heads=kv_heads, max_position_embeddings=128)
+    if config_cls is Qwen3Config:
+        kwargs["head_dim"] = 128
+    config = config_cls(**kwargs)
+    config._attn_implementation = "flash_attention_2"
+    with torch.device("meta"):
+        model = model_cls(config)
+    layer = model.model.layers[0]
+    assert layer.self_attn._fused_attention_output
+    assert layer.mlp._fused_ffn
+
+
+@pytest.mark.parametrize("width,prefill_fused,decode_fused", [
+    (11008, False, True), (13824, False, True),
+    (22016, False, True), (27648, True, True),
+    (25600, True, True), (28672, True, True),
+])
+def test_phase_specific_ffn_dispatch(width, prefill_fused, decode_fused):
+    from types import SimpleNamespace
+    from e2e.quantized_common import QuarotMLPMixin
+
+    mlp = SimpleNamespace(intermediate_size=width, _fused_ffn=True)
+    mlp._unfused_prefill_widths = QuarotMLPMixin._unfused_prefill_widths
+    decide = QuarotMLPMixin._should_use_fused_ffn
+    assert decide(mlp, torch.empty(1, 2048, 1)) is prefill_fused
+    assert decide(mlp, torch.empty(1, 1, 1)) is decode_fused

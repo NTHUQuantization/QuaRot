@@ -1,7 +1,0 @@
-# ninja log v7
-1	3846	1785675953614823091	/root/QuaRot/third-party/hadacore/build/temp.linux-x86_64-cpython-310/hadacore_for_hip.o	4691e52c02995c11
-0	30449	1785675953613823089	/root/QuaRot/third-party/hadacore/build/temp.linux-x86_64-cpython-310/binding.o	7ed25d8208c3a9d3
-1	3738	1785676889732498438	/root/QuaRot/third-party/hadacore/build/temp.linux-x86_64-cpython-310/hadacore_for_hip.o	693782547d76059c
-1	30588	1785676889732498438	/root/QuaRot/third-party/hadacore/build/temp.linux-x86_64-cpython-310/binding.o	c420ede2cd4e5619
-8	18674	1785856034273330421	/root/QuaRot/third-party/hadacore/build/temp.linux-x86_64-cpython-310/hadacore_for_hip.o	693782547d76059c
-8	56414	1785856034273330421	/root/QuaRot/third-party/hadacore/build/temp.linux-x86_64-cpython-310/binding.o	c420ede2cd4e5619

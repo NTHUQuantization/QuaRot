@@ -25,9 +25,12 @@ using torch::indexing::Slice;
 //     N=4096: row-centric CUDA-style kernel.
 //   fp16 winners from tuning:
 //     N=32/64: small warp-shuffle path.
-//     N=128/256: transpose le256 WMMA.
+//     N=128: direct-layout le256 WMMA (Llama-2 13B/CodeLlama 34B inner FHT).
+//     N=256: transpose-layout le256 WMMA (Qwen2.5-32B inner FHT).
+//     N=512: direct dual-H256 butterfly with fused outer H2.
+//     N=1024: single-store transpose WMMA (Qwen3/Qwen2.5/Llama-2-70B inner FHT).
 //     N=4096: row-centric CUDA-style kernel.
-//     N=512/1024/2048: fp32 LDS fallback.
+//     N=2048: fp32 LDS fallback.
 //   fp32, or unsupported fp16/bf16 sizes: fp32 LDS fallback.
 //   fallback requires power-of-two N <= 16384 due to LDS size.
 
@@ -173,6 +176,12 @@ extern "C" __global__ void hadacore_f16_warp_small_kernel(
     int rows,
     int n,
     float scale
+);
+
+extern "C" __global__ void hadacore_f16_h512_direct_kernel(
+    const uint16_t* __restrict__ in,
+    uint16_t* __restrict__ out,
+    int rows
 );
 
 extern "C" __global__ void hadacore_f16_wmma_single_store_t_kernel(
@@ -426,8 +435,17 @@ static WmmaMode resolve_auto_f16_wmma_mode(int had_size, WmmaMode mode) {
     if (had_size == 32 || had_size == 64) {
         return WmmaMode::SmallWarp;
     }
-    if (had_size == 128 || had_size == 256) {
+    if (had_size == 128) {
+        return WmmaMode::Direct;
+    }
+    if (had_size == 256) {
         return WmmaMode::Transpose;
+    }
+    if (had_size == 512) {
+        return WmmaMode::Direct;
+    }
+    if (had_size == 1024) {
+        return WmmaMode::SingleStoreT;
     }
     if (had_size == 4096) {
         return WmmaMode::CudaStyle4096;
@@ -458,8 +476,17 @@ static bool f16_wmma_enabled_for_mode(int had_size, WmmaMode mode) {
     if (small_warp_supported_size(had_size)) {
         return resolved == WmmaMode::SmallWarp;
     }
-    if (had_size == 128 || had_size == 256) {
+    if (had_size == 128) {
+        return resolved == WmmaMode::Direct;
+    }
+    if (had_size == 256) {
         return resolved == WmmaMode::Transpose;
+    }
+    if (had_size == 512) {
+        return resolved == WmmaMode::Direct;
+    }
+    if (had_size == 1024) {
+        return resolved == WmmaMode::SingleStoreT;
     }
     return cuda_style_supported_size(had_size) &&
            resolved == WmmaMode::CudaStyle4096;
@@ -973,6 +1000,22 @@ static torch::Tensor run_f16_wmma(
     mode = resolve_auto_f16_wmma_mode(had_size, mode);
     int64_t rows = x.size(0);
 
+    if (had_size == 512 && mode == WmmaMode::Direct) {
+        torch::Tensor out = inplace ? x : torch::empty_like(x);
+        hipLaunchKernelGGL(
+            hadacore_f16_h512_direct_kernel,
+            dim3(static_cast<unsigned int>(rows)),
+            dim3(256),
+            0,
+            stream,
+            reinterpret_cast<const uint16_t*>(x.data_ptr()),
+            reinterpret_cast<uint16_t*>(out.data_ptr()),
+            static_cast<int>(rows)
+        );
+        HIP_ASSERT(hipGetLastError());
+        return out;
+    }
+
     if (mode == WmmaMode::CudaStyle4096) {
         TORCH_CHECK(cuda_style_supported_size(had_size), "fp16 cuda_style currently supports only N=4096");
         torch::Tensor out = inplace ? x : torch::empty_like(x);
@@ -1174,6 +1217,7 @@ torch::Tensor hadacore(at::Tensor& in, double scale) {
     }
     return out * ratio;
 }
+
 
 namespace py = pybind11;
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {

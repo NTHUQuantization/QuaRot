@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdint>
 #include <vector>
+#include <type_traits>
 
 #include <torch/extension.h>
 
@@ -13,10 +14,12 @@
 
 namespace {
 
-constexpr int kHeadDim = 128;
 constexpr int kThreads = 256;
 constexpr int kMaxFusedWidth = 8192;
 constexpr int kMaxGeneralFfnWidth = 14336;
+// Qwen3-32B uses a 25 * 1024 transform. A float row needs 100 KiB,
+// so widths above the single-block LDS limit use a tiled pipeline.
+constexpr int kMaxLargeGeneralFfnWidth = 28672;
 
 __device__ __forceinline__ uint8_t pack_s4_pair(int lo, int hi) {
   // QuaRot GEMM consumes two's-complement signed nibbles, low element first.
@@ -82,30 +85,68 @@ __device__ __forceinline__ void hadamard(float* values, int width) {
   }
 }
 
+template <int Width>
+__device__ __forceinline__ void hadamard_fixed(float* values) {
+#pragma unroll
+  for (int stride = 1; stride < Width; stride <<= 1) {
+    for (int pair = threadIdx.x; pair < Width / 2; pair += blockDim.x) {
+      const int low = ((pair / stride) * (stride << 1)) +
+                      (pair & (stride - 1));
+      const float a = values[low];
+      const float b = values[low + stride];
+      values[low] = a + b;
+      values[low + stride] = a - b;
+    }
+    __syncthreads();
+  }
+}
+
+template <int Inner>
+__device__ __forceinline__ void hadamard_grouped_fixed(
+    float* values, int width) {
+#pragma unroll
+  for (int stride = 1; stride < Inner; stride <<= 1) {
+    constexpr int pairs_per_group = Inner / 2;
+    for (int pair = threadIdx.x; pair < width / 2; pair += blockDim.x) {
+      const int group = pair / pairs_per_group;
+      const int local_pair = pair - group * pairs_per_group;
+      const int low = group * Inner +
+          (local_pair / stride) * (stride << 1) +
+          (local_pair & (stride - 1));
+      const float a = values[low];
+      const float b = values[low + stride];
+      values[low] = a + b;
+      values[low + stride] = a - b;
+    }
+    __syncthreads();
+  }
+}
+
+template <int HeadDim>
 __global__ void fused_append_kv_i4_kernel(
     const half* key, const half* value, uint8_t* kv_data, half2* kv_param,
     const int32_t* kv_indptr, const int32_t* kv_indices,
     const int32_t* last_page_offset, int num_layers, int layer_idx,
     int num_heads, int page_size, int batch_size) {
-  __shared__ float k_values[kHeadDim];
-  __shared__ float v_values[kHeadDim];
-  __shared__ float scratch[kHeadDim];
+  __shared__ float k_values[HeadDim];
+  __shared__ float v_values[HeadDim];
+  __shared__ float scratch[HeadDim];
   const int tid = threadIdx.x;
   const int batch = blockIdx.x;
   const int head = blockIdx.y;
-  if (batch >= batch_size || head >= num_heads || tid >= kHeadDim) return;
+  if (batch >= batch_size || head >= num_heads || tid >= HeadDim) return;
 
   const int seq_len = (kv_indptr[batch + 1] - kv_indptr[batch] - 1) * page_size + last_page_offset[batch];
   if (seq_len <= 0) return;
   const int page = kv_indices[kv_indptr[batch] + (seq_len - 1) / page_size];
   const int slot = (seq_len - 1) % page_size;
-  const int input = (batch * num_heads + head) * kHeadDim + tid;
+  const int input = (batch * num_heads + head) * HeadDim + tid;
   k_values[tid] = __half2float(key[input]);
   v_values[tid] = __half2float(value[input]);
   __syncthreads();
 
-  hadamard(k_values, kHeadDim);
-  float kx = k_values[tid] * rsqrtf(float(kHeadDim));
+  hadamard(k_values, HeadDim);
+  float kx = k_values[tid] * rsqrtf(float(HeadDim));
   k_values[tid] = kx;
   float kmax = reduce_max(kx, scratch);
   __syncthreads();
@@ -117,7 +158,7 @@ __global__ void fused_append_kv_i4_kernel(
   if ((tid & 1) == 0) {
     int q0 = max(0, min(15, static_cast<int>(nearbyintf((k_values[tid] + kzero) / kscale))));
     int q1 = max(0, min(15, static_cast<int>(nearbyintf((k_values[tid + 1] + kzero) / kscale))));
-    size_t index = (((static_cast<size_t>(page) * num_layers + layer_idx) * 2 * num_heads + head) * page_size + slot) * (kHeadDim / 2) + (tid >> 1);
+    size_t index = (((static_cast<size_t>(page) * num_layers + layer_idx) * 2 * num_heads + head) * page_size + slot) * (HeadDim / 2) + (tid >> 1);
     kv_data[index] = pack_u4_pair(q0, q1);
   }
   if (tid == 0) {
@@ -126,8 +167,8 @@ __global__ void fused_append_kv_i4_kernel(
   }
   __syncthreads();
 
-  hadamard(v_values, kHeadDim);
-  float vx = v_values[tid] * rsqrtf(float(kHeadDim));
+  hadamard(v_values, HeadDim);
+  float vx = v_values[tid] * rsqrtf(float(HeadDim));
   v_values[tid] = vx;
   float vmax = reduce_max(vx, scratch);
   __syncthreads();
@@ -139,7 +180,7 @@ __global__ void fused_append_kv_i4_kernel(
   if ((tid & 1) == 0) {
     int q0 = max(0, min(15, static_cast<int>(nearbyintf((v_values[tid] + vzero) / vscale))));
     int q1 = max(0, min(15, static_cast<int>(nearbyintf((v_values[tid + 1] + vzero) / vscale))));
-    size_t index = ((((static_cast<size_t>(page) * num_layers + layer_idx) * 2 + 1) * num_heads + head) * page_size + slot) * (kHeadDim / 2) + (tid >> 1);
+    size_t index = ((((static_cast<size_t>(page) * num_layers + layer_idx) * 2 + 1) * num_heads + head) * page_size + slot) * (HeadDim / 2) + (tid >> 1);
     kv_data[index] = pack_u4_pair(q0, q1);
   }
   if (tid == 0) {
@@ -223,6 +264,74 @@ __global__ void fused_attention_hadamard_quant_kernel(
   }
 }
 
+__global__ void fused_attention_hadamard_quant_general_kernel(
+    const half* attention, const half* matrix, uint8_t* packed, half* scales,
+    int rows, int num_heads, int head_dim, int remainder, int inner) {
+  extern __shared__ float values[];
+  __shared__ float scratch[kThreads];
+  const int row = blockIdx.x;
+  const int width = num_heads * head_dim;
+  if (row >= rows) return;
+  for (int i = threadIdx.x; i < width; i += blockDim.x) {
+    const int d = i / num_heads;
+    const int h = i - d * num_heads;
+    values[i] = __half2float(attention[(row * num_heads + h) * head_dim + d]);
+  }
+  __syncthreads();
+  for (int stride = 1; stride < inner; stride <<= 1) {
+    const int pairs_per_group = inner >> 1;
+    const int groups = head_dim * remainder;
+    for (int pair = threadIdx.x; pair < groups * pairs_per_group;
+         pair += blockDim.x) {
+      const int group = pair / pairs_per_group;
+      const int local = pair - group * pairs_per_group;
+      const int low = group * inner + (local / stride) * (stride << 1)
+                      + (local & (stride - 1));
+      const float a = values[low], b = values[low + stride];
+      values[low] = a + b;
+      values[low + stride] = a - b;
+    }
+    __syncthreads();
+  }
+  constexpr int kOwned = (kMaxFusedWidth / 2 + kThreads - 1) / kThreads;
+  float transformed[kOwned * 2];
+  float local_max = 0.0f;
+  const float norm = rsqrtf(float(num_heads));
+  int owned = 0;
+  for (int pair = threadIdx.x; pair < width / 2;
+       pair += blockDim.x, ++owned) {
+#pragma unroll
+    for (int which = 0; which < 2; ++which) {
+      const int flat = pair * 2 + which;
+      const int h = flat / head_dim;
+      const int d = flat - h * head_dim;
+      const int out_k = h / inner;
+      const int p = h - out_k * inner;
+      float value = 0.0f;
+      for (int in_k = 0; in_k < remainder; ++in_k) {
+        value += __half2float(matrix[out_k * remainder + in_k])
+                 * values[d * num_heads + in_k * inner + p];
+      }
+      value *= norm;
+      transformed[owned * 2 + which] = value;
+      local_max = fmaxf(local_max, fabsf(value));
+    }
+  }
+  half scale_h = __float2half(fmaxf(
+      reduce_max(local_max, scratch) / 7.0f, 6.103515625e-5f));
+  const float scale = __half2float(scale_h);
+  if (threadIdx.x == 0) scales[row] = scale_h;
+  owned = 0;
+  for (int pair = threadIdx.x; pair < width / 2;
+       pair += blockDim.x, ++owned) {
+    const int q0 = max(-8, min(7, static_cast<int>(
+        nearbyintf(transformed[owned * 2] / scale))));
+    const int q1 = max(-8, min(7, static_cast<int>(
+        nearbyintf(transformed[owned * 2 + 1] / scale))));
+    packed[row * (width / 2) + pair] = pack_s4_pair(q0, q1);
+  }
+}
+
 __global__ void fused_ffn_silu_hadamard_quant_kernel(
     const half* gate, const half* up, uint8_t* packed, half* scales,
     int rows, int width) {
@@ -282,6 +391,12 @@ __global__ void fused_ffn_silu_hadamard_quant_general_kernel(
       if (regs == 2) values[group * inner + 32 + lane] = registers[1];
     }
     __syncthreads();
+  } else if (inner == 128) {
+    hadamard_grouped_fixed<128>(values, width);
+  } else if (inner == 512) {
+    hadamard_grouped_fixed<512>(values, width);
+  } else if (inner == 1024) {
+    hadamard_grouped_fixed<1024>(values, width);
   } else {
     for (int stride = 1; stride < inner; stride <<= 1) {
       const int pairs_per_group = inner >> 1;
@@ -339,6 +454,220 @@ __global__ void fused_ffn_silu_hadamard_quant_general_kernel(
   }
 }
 
+// Split a large tensor-product transform at its natural boundary. Each block
+// fuses SiLU*up with one inner power-of-two transform and uses only
+// inner*sizeof(float) LDS. The finish kernel applies the remainder transform,
+// computes the row scale, and directly packs INT4.
+template <int Inner>
+__global__ void fused_ffn_general_inner_fixed_kernel(
+    const half* gate, const half* up, float* workspace, int rows, int width,
+    int remainder) {
+  __shared__ float values[Inner];
+  constexpr int inner = Inner;
+  const int row = blockIdx.x;
+  const int group = blockIdx.y;
+  if (row >= rows || group >= remainder) return;
+  const int base = row * width + group * inner;
+  for (int i = threadIdx.x; i < inner; i += blockDim.x) {
+    values[i] = silu(__half2float(gate[base + i])) *
+                __half2float(up[base + i]);
+  }
+  __syncthreads();
+  hadamard_fixed<Inner>(values);
+  for (int i = threadIdx.x; i < inner; i += blockDim.x) {
+    workspace[base + i] = values[i];
+  }
+}
+
+__global__ void fused_ffn_general_large_finish_kernel(
+    const float* values, const half* hadamard, uint8_t* packed, half* scales,
+    int rows, int width, int remainder, int inner) {
+  __shared__ float scratch[kThreads];
+  const int row = blockIdx.x;
+  if (row >= rows) return;
+  constexpr int kMaxPairsPerThread =
+      (kMaxLargeGeneralFfnWidth / 2 + kThreads - 1) / kThreads;
+  float transformed[kMaxPairsPerThread * 2];
+  const float norm = rsqrtf(float(width));
+  float local_max = 0.0f;
+  int owned_pairs = 0;
+  for (int pair = threadIdx.x; pair < width / 2;
+       pair += blockDim.x, ++owned_pairs) {
+#pragma unroll
+    for (int which = 0; which < 2; ++which) {
+      const int out = pair * 2 + which;
+      const int out_k = out / inner;
+      const int p_index = out - out_k * inner;
+      float value = 0.0f;
+      for (int in_k = 0; in_k < remainder; ++in_k) {
+        value += __half2float(hadamard[out_k * remainder + in_k]) *
+                 values[row * width + in_k * inner + p_index];
+      }
+      value *= norm;
+      transformed[owned_pairs * 2 + which] = value;
+      local_max = fmaxf(local_max, fabsf(value));
+    }
+  }
+  const half scale_h = __float2half(fmaxf(
+      reduce_max(local_max, scratch) / 7.0f, 6.103515625e-5f));
+  const float scale = __half2float(scale_h);
+  if (threadIdx.x == 0) scales[row] = scale_h;
+  owned_pairs = 0;
+  for (int pair = threadIdx.x; pair < width / 2;
+       pair += blockDim.x, ++owned_pairs) {
+    const int q0 = max(-8, min(7, static_cast<int>(
+        nearbyintf(transformed[owned_pairs * 2] / scale))));
+    const int q1 = max(-8, min(7, static_cast<int>(
+        nearbyintf(transformed[owned_pairs * 2 + 1] / scale))));
+    packed[row * (width / 2) + pair] = pack_s4_pair(q0, q1);
+  }
+}
+
+
+// gfx12 FP16 WMMA fragments used by the single-kernel remainder GEMM.
+typedef _Float16 quarot_f16_frag __attribute__((ext_vector_type(8)));
+typedef float quarot_f32_frag __attribute__((ext_vector_type(8)));
+
+__device__ __forceinline__ quarot_f32_frag zero_quarot_f32_frag() {
+  quarot_f32_frag result;
+#pragma unroll
+  for (int i = 0; i < 8; ++i) result[i] = 0.0f;
+  return result;
+}
+
+__device__ __forceinline__ quarot_f32_frag quarot_wmma_f16(
+    quarot_f16_frag a, quarot_f16_frag b, quarot_f32_frag c) {
+#if defined(__HIP_DEVICE_COMPILE__) && \
+    (defined(__gfx1200__) || defined(__gfx1201__) || defined(__gfx1250__))
+  return __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(a, b, c);
+#else
+  return c;
+#endif
+}
+
+__device__ __forceinline__ quarot_f16_frag load_remainder_a(
+    const half* matrix, int remainder, int out_base, int in_base, int lane) {
+  quarot_f16_frag frag;
+  const int out = out_base + (lane & 15);
+  const int k_base = in_base + (lane >> 4) * 8;
+#pragma unroll
+  for (int i = 0; i < 8; ++i) {
+    const int k = k_base + i;
+    frag[i] = (out < remainder && k < remainder)
+        ? static_cast<_Float16>(matrix[out * remainder + k])
+        : static_cast<_Float16>(0.0f);
+  }
+  return frag;
+}
+
+__device__ __forceinline__ quarot_f16_frag load_remainder_b(
+    const half* values, int remainder, int inner, int in_base, int p_base,
+    int lane) {
+  quarot_f16_frag frag;
+  const int p = p_base + (lane & 15);
+  const int k_base = in_base + (lane >> 4) * 8;
+#pragma unroll
+  for (int i = 0; i < 8; ++i) {
+    const int k = k_base + i;
+    frag[i] = (k < remainder && p < inner)
+        ? static_cast<_Float16>(values[k * inner + p])
+        : static_cast<_Float16>(0.0f);
+  }
+  return frag;
+}
+
+// True single-kernel large FFN fusion for small generalized remainders.
+// Storage stays FP16 in LDS; FHT and matrix accumulators use FP32 registers.
+// One workgroup owns a row, so scale reduction and INT4 packing require no
+// grid-wide synchronization or global intermediate.
+__global__ void fused_ffn_silu_hadamard_quant_single_fp16lds_kernel(
+    const half* gate, const half* up, const half* matrix, uint8_t* packed,
+    half* scales, int rows, int width, int remainder, int inner) {
+  __shared__ half values[kMaxLargeGeneralFfnWidth];       // <= 56 KiB
+  __shared__ float inner_values[1024];                    // 4 KiB
+  __shared__ half remainder_tile[48 * 16];                // 1.5 KiB
+  __shared__ float reduce_scratch[kThreads];              // 1 KiB
+  const int row = blockIdx.x;
+  const int tid = threadIdx.x;
+  if (row >= rows) return;
+
+  for (int i = tid; i < width; i += blockDim.x) {
+    const float g = __half2float(gate[row * width + i]);
+    const float u = __half2float(up[row * width + i]);
+    values[i] = __float2half(silu(g) * u);
+  }
+  __syncthreads();
+
+  // Each group is independent. FP32 butterfly scratch prevents per-stage FP16
+  // rounding while the complete row remains compact in FP16 LDS.
+  for (int group = 0; group < remainder; ++group) {
+    for (int p = tid; p < inner; p += blockDim.x) {
+      inner_values[p] = __half2float(values[group * inner + p]);
+    }
+    __syncthreads();
+    hadamard(inner_values, inner);
+    for (int p = tid; p < inner; p += blockDim.x) {
+      values[group * inner + p] = __float2half(inner_values[p]);
+    }
+    __syncthreads();
+  }
+
+  const int lane = tid & 31;
+  const int wave = tid >> 5;
+  const int out_tiles = (remainder + 15) >> 4;
+  const int k_tiles = (remainder + 15) >> 4;
+  const float norm = rsqrtf(static_cast<float>(width));
+  for (int p_base = 0; p_base < inner; p_base += 16) {
+    if (wave < out_tiles) {
+      quarot_f32_frag accum = zero_quarot_f32_frag();
+      const int out_base = wave * 16;
+      for (int kt = 0; kt < k_tiles; ++kt) {
+        const int in_base = kt * 16;
+        const quarot_f16_frag a = load_remainder_a(
+            matrix, remainder, out_base, in_base, lane);
+        const quarot_f16_frag b = load_remainder_b(
+            values, remainder, inner, in_base, p_base, lane);
+        accum = quarot_wmma_f16(a, b, accum);
+      }
+      const int p_col = lane & 15;
+      const int out_row_base = (lane >> 4) * 8;
+#pragma unroll
+      for (int i = 0; i < 8; ++i) {
+        const int out_k = out_base + out_row_base + i;
+        if (out_k < remainder && p_base + p_col < inner) {
+          remainder_tile[out_k * 16 + p_col] =
+              __float2half(accum[i] * norm);
+        }
+      }
+    }
+    __syncthreads();
+    for (int index = tid; index < remainder * 16; index += blockDim.x) {
+      const int out_k = index >> 4;
+      const int p_col = index & 15;
+      if (p_base + p_col < inner) {
+        values[out_k * inner + p_base + p_col] = remainder_tile[index];
+      }
+    }
+    __syncthreads();
+  }
+
+  float local_max = 0.0f;
+  for (int i = tid; i < width; i += blockDim.x) {
+    local_max = fmaxf(local_max, fabsf(__half2float(values[i])));
+  }
+  const half scale_h = __float2half(fmaxf(
+      reduce_max(local_max, reduce_scratch) / 7.0f, 6.103515625e-5f));
+  const float scale = __half2float(scale_h);
+  if (tid == 0) scales[row] = scale_h;
+  for (int pair = tid; pair < width / 2; pair += blockDim.x) {
+    const int q0 = max(-8, min(7, static_cast<int>(nearbyintf(
+        __half2float(values[pair * 2]) / scale))));
+    const int q1 = max(-8, min(7, static_cast<int>(nearbyintf(
+        __half2float(values[pair * 2 + 1]) / scale))));
+    packed[row * (width / 2) + pair] = pack_s4_pair(q0, q1);
+  }
+}
+
 void check_cuda_half_contiguous(const torch::Tensor& tensor, const char* name) {
   TORCH_CHECK(tensor.is_cuda(), name, " must be a CUDA/HIP tensor");
   TORCH_CHECK(tensor.scalar_type() == torch::kFloat16, name, " must be float16");
@@ -369,15 +698,25 @@ void fused_append_kv_i4(
               "paged-cache metadata lengths do not match batch_size");
   TORCH_CHECK(num_layers > 0 && num_heads > 0 && page_size > 0 && batch_size > 0,
               "cache dimensions must be positive");
-  TORCH_CHECK(key.sizes() == value.sizes() && key.dim() == 3 && key.size(0) == batch_size && key.size(1) == num_heads && key.size(2) == kHeadDim, "key/value must have shape [batch, heads, 128]");
+  const int64_t head_dim = key.size(2);
+  TORCH_CHECK(key.sizes() == value.sizes() && key.dim() == 3 &&
+              key.size(0) == batch_size && key.size(1) == num_heads &&
+              (head_dim == 64 || head_dim == 128),
+              "key/value must have shape [batch, heads, 64 or 128]");
   TORCH_CHECK(layer_idx >= 0 && layer_idx < num_layers, "layer_idx is outside the cache");
   at::hip::HIPGuard guard{static_cast<char>(key.get_device())};
-  hipLaunchKernelGGL(fused_append_kv_i4_kernel, dim3(batch_size, num_heads), dim3(kHeadDim), 0,
-      at::hip::getCurrentHIPStream().stream(), reinterpret_cast<const half*>(key.data_ptr<at::Half>()),
-      reinterpret_cast<const half*>(value.data_ptr<at::Half>()), kv_data.data_ptr<uint8_t>(),
-      reinterpret_cast<half2*>(kv_param.data_ptr<at::Half>()), kv_indptr.data_ptr<int32_t>(),
-      kv_indices.data_ptr<int32_t>(), last_page_offset.data_ptr<int32_t>(), num_layers,
-      layer_idx, num_heads, page_size, batch_size);
+#define LAUNCH_FUSED_APPEND(HEAD_DIM) hipLaunchKernelGGL(\
+      (fused_append_kv_i4_kernel<HEAD_DIM>), dim3(batch_size, num_heads), \
+      dim3(HEAD_DIM), 0, at::hip::getCurrentHIPStream().stream(), \
+      reinterpret_cast<const half*>(key.data_ptr<at::Half>()), \
+      reinterpret_cast<const half*>(value.data_ptr<at::Half>()), \
+      kv_data.data_ptr<uint8_t>(), reinterpret_cast<half2*>(kv_param.data_ptr<at::Half>()), \
+      kv_indptr.data_ptr<int32_t>(), kv_indices.data_ptr<int32_t>(), \
+      last_page_offset.data_ptr<int32_t>(), num_layers, layer_idx, num_heads, \
+      page_size, batch_size)
+  if (head_dim == 64) { LAUNCH_FUSED_APPEND(64); }
+  else { LAUNCH_FUSED_APPEND(128); }
+#undef LAUNCH_FUSED_APPEND
   TORCH_CHECK(hipGetLastError() == hipSuccess, "fused_append_kv_i4 launch failed");
 }
 
@@ -397,6 +736,46 @@ std::vector<torch::Tensor> fused_attention_hadamard_quant(torch::Tensor attentio
       at::hip::getCurrentHIPStream().stream(), reinterpret_cast<const half*>(attention.data_ptr<at::Half>()),
       packed.data_ptr<uint8_t>(), reinterpret_cast<half*>(scales.data_ptr<at::Half>()), rows, num_heads, head_dim);
   TORCH_CHECK(hipGetLastError() == hipSuccess, "fused_attention_hadamard_quant launch failed");
+  return {packed, scales};
+}
+
+std::vector<torch::Tensor> fused_attention_hadamard_quant_general(
+    torch::Tensor attention, int64_t num_heads, torch::Tensor matrix) {
+  check_cuda_half_contiguous(attention, "attention");
+  check_cuda_half_contiguous(matrix, "matrix");
+  TORCH_CHECK(attention.dim() == 4 && attention.size(2) == num_heads,
+              "attention must have shape [batch, sequence, heads, head_dim]");
+  TORCH_CHECK(matrix.dim() == 2 && matrix.size(0) == matrix.size(1),
+              "matrix must be square");
+  TORCH_CHECK(attention.get_device() == matrix.get_device(),
+              "attention and matrix must be on the same device");
+  const int64_t remainder = matrix.size(0);
+  TORCH_CHECK(num_heads % remainder == 0,
+              "num_heads must be divisible by the remainder order");
+  const int64_t inner = num_heads / remainder;
+  TORCH_CHECK(power_of_two(inner), "heads / remainder must be a power of two");
+  const int64_t head_dim = attention.size(3);
+  const int64_t width = num_heads * head_dim;
+  TORCH_CHECK(width <= kMaxFusedWidth && width % 2 == 0,
+              "general fused attention supports even widths up to ",
+              kMaxFusedWidth);
+  const int64_t rows = attention.numel() / width;
+  auto packed = torch::empty(
+      {attention.size(0), attention.size(1), width / 2},
+      attention.options().dtype(torch::kUInt8));
+  auto scales = torch::empty(
+      {attention.size(0), attention.size(1), 1}, attention.options());
+  at::hip::HIPGuard guard{static_cast<char>(attention.get_device())};
+  hipLaunchKernelGGL(fused_attention_hadamard_quant_general_kernel,
+      dim3(rows), dim3(kThreads), width * sizeof(float),
+      at::hip::getCurrentHIPStream().stream(),
+      reinterpret_cast<const half*>(attention.data_ptr<at::Half>()),
+      reinterpret_cast<const half*>(matrix.data_ptr<at::Half>()),
+      packed.data_ptr<uint8_t>(),
+      reinterpret_cast<half*>(scales.data_ptr<at::Half>()), rows,
+      num_heads, head_dim, remainder, inner);
+  TORCH_CHECK(hipGetLastError() == hipSuccess,
+              "fused_attention_hadamard_quant_general launch failed");
   return {packed, scales};
 }
 
@@ -422,6 +801,48 @@ std::vector<torch::Tensor> fused_ffn_silu_hadamard_quant(torch::Tensor gate, tor
 }
 
 
+std::vector<torch::Tensor> fused_ffn_silu_hadamard_quant_single_fp16lds(
+    torch::Tensor gate, torch::Tensor up, torch::Tensor matrix) {
+  check_cuda_half_contiguous(gate, "gate");
+  check_cuda_half_contiguous(up, "up");
+  check_cuda_half_contiguous(matrix, "matrix");
+  TORCH_CHECK(gate.sizes() == up.sizes() && gate.dim() >= 1,
+              "gate and up must have identical non-empty shapes");
+  TORCH_CHECK(matrix.dim() == 2 && matrix.size(0) == matrix.size(1),
+              "matrix must be square");
+  TORCH_CHECK(gate.get_device() == matrix.get_device(),
+              "gate, up, and matrix must be on the same device");
+  const int64_t width = gate.size(-1);
+  const int64_t remainder = matrix.size(0);
+  TORCH_CHECK(width > 0 && width <= kMaxLargeGeneralFfnWidth &&
+                  width % remainder == 0 && width % 2 == 0,
+              "unsupported single-kernel FFN width/remainder");
+  const int64_t inner = width / remainder;
+  TORCH_CHECK(power_of_two(inner) && inner <= 1024,
+              "single-kernel FFN inner transform must be power-of-two <=1024");
+  TORCH_CHECK(remainder <= 48,
+              "single-kernel WMMA remainder supports orders up to 48");
+  const int64_t rows = gate.numel() / width;
+  TORCH_CHECK(rows > 0, "single-kernel FFN does not support empty tensors");
+  auto packed_shape = gate.sizes().vec(); packed_shape.back() = width / 2;
+  auto scale_shape = gate.sizes().vec(); scale_shape.back() = 1;
+  auto packed = torch::empty(packed_shape, gate.options().dtype(torch::kUInt8));
+  auto scales = torch::empty(scale_shape, gate.options());
+  at::hip::HIPGuard guard{static_cast<char>(gate.get_device())};
+  hipLaunchKernelGGL(fused_ffn_silu_hadamard_quant_single_fp16lds_kernel,
+      dim3(rows), dim3(kThreads), 0,
+      at::hip::getCurrentHIPStream().stream(),
+      reinterpret_cast<const half*>(gate.data_ptr<at::Half>()),
+      reinterpret_cast<const half*>(up.data_ptr<at::Half>()),
+      reinterpret_cast<const half*>(matrix.data_ptr<at::Half>()),
+      packed.data_ptr<uint8_t>(),
+      reinterpret_cast<half*>(scales.data_ptr<at::Half>()), rows, width,
+      remainder, inner);
+  TORCH_CHECK(hipGetLastError() == hipSuccess,
+              "single-kernel FP16-LDS fused FFN launch failed");
+  return {packed, scales};
+}
+
 std::vector<torch::Tensor> fused_ffn_silu_hadamard_quant_general(
     torch::Tensor gate, torch::Tensor up, torch::Tensor hadamard) {
   check_cuda_half_contiguous(gate, "gate");
@@ -435,10 +856,10 @@ std::vector<torch::Tensor> fused_ffn_silu_hadamard_quant_general(
               "gate, up, and hadamard must be on the same device");
   const int64_t width = gate.size(-1);
   const int64_t remainder = hadamard.size(0);
-  TORCH_CHECK(width > 0 && width <= kMaxGeneralFfnWidth &&
+  TORCH_CHECK(width > 0 && width <= kMaxLargeGeneralFfnWidth &&
                   width % remainder == 0 && width % 2 == 0,
               "width must be a positive even multiple of the Hadamard order and at most ",
-              kMaxGeneralFfnWidth);
+              kMaxLargeGeneralFfnWidth);
   const int64_t inner = width / remainder;
   TORCH_CHECK(power_of_two(inner),
               "width / Hadamard order must be a power of two");
@@ -449,15 +870,44 @@ std::vector<torch::Tensor> fused_ffn_silu_hadamard_quant_general(
   auto packed = torch::empty(packed_shape, gate.options().dtype(torch::kUInt8));
   auto scales = torch::empty(scale_shape, gate.options());
   at::hip::HIPGuard guard{static_cast<char>(gate.get_device())};
-  hipLaunchKernelGGL(fused_ffn_silu_hadamard_quant_general_kernel,
-      dim3(rows), dim3(kThreads), width * sizeof(float),
-      at::hip::getCurrentHIPStream().stream(),
-      reinterpret_cast<const half*>(gate.data_ptr<at::Half>()),
-      reinterpret_cast<const half*>(up.data_ptr<at::Half>()),
-      reinterpret_cast<const half*>(hadamard.data_ptr<at::Half>()),
-      packed.data_ptr<uint8_t>(),
-      reinterpret_cast<half*>(scales.data_ptr<at::Half>()), rows, width,
-      remainder, inner);
+  auto stream = at::hip::getCurrentHIPStream().stream();
+  if (width <= kMaxGeneralFfnWidth) {
+    hipLaunchKernelGGL(fused_ffn_silu_hadamard_quant_general_kernel,
+        dim3(rows), dim3(kThreads), width * sizeof(float), stream,
+        reinterpret_cast<const half*>(gate.data_ptr<at::Half>()),
+        reinterpret_cast<const half*>(up.data_ptr<at::Half>()),
+        reinterpret_cast<const half*>(hadamard.data_ptr<at::Half>()),
+        packed.data_ptr<uint8_t>(),
+        reinterpret_cast<half*>(scales.data_ptr<at::Half>()), rows, width,
+        remainder, inner);
+  } else {
+    auto workspace = torch::empty(
+        gate.sizes(), gate.options().dtype(torch::kFloat32));
+#define LAUNCH_LARGE_INNER(INNER) hipLaunchKernelGGL(\
+        (fused_ffn_general_inner_fixed_kernel<INNER>), \
+        dim3(rows, remainder), dim3(kThreads), 0, stream, \
+        reinterpret_cast<const half*>(gate.data_ptr<at::Half>()), \
+        reinterpret_cast<const half*>(up.data_ptr<at::Half>()), \
+        workspace.data_ptr<float>(), rows, width, remainder)
+    if (inner == 128) { LAUNCH_LARGE_INNER(128); }
+    else if (inner == 256) { LAUNCH_LARGE_INNER(256); }
+    else if (inner == 512) { LAUNCH_LARGE_INNER(512); }
+    else if (inner == 1024) { LAUNCH_LARGE_INNER(1024); }
+    else {
+      TORCH_CHECK(false,
+                  "large fused FFN supports inner H128/H256/H512/H1024; got H",
+                  inner);
+    }
+#undef LAUNCH_LARGE_INNER
+    TORCH_CHECK(hipGetLastError() == hipSuccess,
+                "large fused FFN inner-transform launch failed");
+    hipLaunchKernelGGL(fused_ffn_general_large_finish_kernel,
+        dim3(rows), dim3(kThreads), 0, stream, workspace.data_ptr<float>(),
+        reinterpret_cast<const half*>(hadamard.data_ptr<at::Half>()),
+        packed.data_ptr<uint8_t>(),
+        reinterpret_cast<half*>(scales.data_ptr<at::Half>()), rows, width,
+        remainder, inner);
+  }
   TORCH_CHECK(hipGetLastError() == hipSuccess,
               "fused_ffn_silu_hadamard_quant_general launch failed");
   return {packed, scales};

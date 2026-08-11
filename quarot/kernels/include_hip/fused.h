@@ -11,8 +11,14 @@ void fused_append_kv_i4(
 std::vector<torch::Tensor> fused_attention_hadamard_quant(
     torch::Tensor attention, int64_t num_heads);
 
+std::vector<torch::Tensor> fused_attention_hadamard_quant_general(
+    torch::Tensor attention, int64_t num_heads, torch::Tensor matrix);
+
 std::vector<torch::Tensor> fused_ffn_silu_hadamard_quant(
     torch::Tensor gate, torch::Tensor up);
+
+std::vector<torch::Tensor> fused_ffn_silu_hadamard_quant_single_fp16lds(
+    torch::Tensor gate, torch::Tensor up, torch::Tensor matrix);
 
 std::vector<torch::Tensor> fused_ffn_silu_hadamard_quant_general(
     torch::Tensor gate, torch::Tensor up, torch::Tensor hadamard);

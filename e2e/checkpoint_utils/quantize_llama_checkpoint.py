@@ -3,6 +3,11 @@ import transformers
 import torch
 import shutil
 import json
+import sys
+from pathlib import Path
+
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from e2e.quantized_llama import modeling_llama
 from e2e.checkpoint_utils import data_utils, gptq_utils, rotation_utils
@@ -13,8 +18,18 @@ def main(args):
 
     device = torch.device('cuda:0') if torch.cuda.is_available() else torch.device('cpu')
     model.seqlen = 2048
-    rotation_utils.fuse_layer_norms(model)
-    rotation_utils.rotate_model(model)
+    rotation_device = (torch.device('cuda:0') if args.rotation_device == 'cuda'
+                       else torch.device('cpu'))
+    rotation_dtype = {
+        'float32': torch.float32,
+        'float64': torch.float64,
+    }[args.rotation_dtype]
+    print(f"Offline fusion/rotation: device={rotation_device}, "
+          f"dtype={rotation_dtype}", flush=True)
+    rotation_utils.fuse_layer_norms(
+        model, device=rotation_device, dtype=rotation_dtype)
+    rotation_utils.rotate_model(
+        model, device=rotation_device, dtype=rotation_dtype)
     if not args.w_rtn:
         trainloader = data_utils.get_loaders(
             args.cal_dataset, nsamples=args.nsamples,
@@ -107,7 +122,7 @@ if __name__ == "__main__":
                         help='ASymmetric weight quantization (default: False)')
     parser.add_argument('--w_rtn', action=argparse.BooleanOptionalAction, default=False,
                         help='Quantize the weights using RtN. If the w_bits < 16 and this flag is not set, we use GPTQ')
-    parser.add_argument('--w_clip', action=argparse.BooleanOptionalAction, default=False,
+    parser.add_argument('--w_clip', action=argparse.BooleanOptionalAction, default=True,
                         help='''Clipping the weight quantization! 
                         We do not support arguments for clipping and we find the best clip ratio during the weight quantization''')
     parser.add_argument('--nsamples', type=int, default=128,
@@ -118,6 +133,12 @@ if __name__ == "__main__":
                         help='Percent of the average Hessian diagonal to use for dampening.')
     parser.add_argument('--act_order', action=argparse.BooleanOptionalAction, default=False,
                         help='act-order in GPTQ')
+    parser.add_argument('--rotation_device', '--rotation-device',
+                        choices=('cuda', 'cpu'), default='cuda',
+                        help='Device for offline fusion and rotation')
+    parser.add_argument('--rotation_dtype', '--rotation-dtype',
+                        choices=('float32', 'float64'), default='float32',
+                        help='Compute dtype for offline fusion and rotation')
 
     args = parser.parse_args()
 

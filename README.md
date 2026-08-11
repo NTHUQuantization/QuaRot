@@ -9,27 +9,9 @@ We introduce QuaRot, a new **Qua**ntization scheme based on **Rot**ations, which
 
 ![Your Image](img/fig1.png)
 
-### Clone and install
+## setup
 
-```bash
-git clone https://github.com/NTHUQuantization/QuaRot.git
-```
-
-download composable kernel
-```bash
-cd ~/QuaRot/third-party
-git clone --depth 1 --filter=blob:none --sparse \
-  --branch develop \
-  https://github.com/ROCm/rocm-libraries.git \
-  rocm-libraries
-
-cd rocm-libraries
-
-git sparse-checkout set projects/composablekernel
-```
-download hadmard transform
-
-build 
+### build 
 ```bash
 python -m pip install -r requirements.txt
 
@@ -40,7 +22,9 @@ python -m pip install -e third-party/hadacore --no-build-isolation -v
 python -m pip install -e . --no-build-isolation -v
 ```
 
-## Running benchmark
+# benchmark example
+
+## synthetic benchmark
 
 ```bash
 python benchmark.py \
@@ -51,9 +35,51 @@ python benchmark.py \
 ```
 "--int4_only" is required to run CodeLlama-34b-hf
 
-For simulation-only experiments, see the [fake_quant](fake_quant) directory.
 
-### Star History
+## Generate int4 checkpoint
+
+### RTN
+```bash
+python e2e/checkpoint_utils/quantize_checkpoint.py \
+  --model meta-llama/CodeLlama-34b-hf \
+  --output /models/quarot-codellama-34b-rtn-int4 \
+  --w-rtn \
+  --rotation-device cuda \
+  --rotation-dtype float32
+```
+
+### GPTQ
+```bash
+python e2e/checkpoint_utils/quantize_checkpoint.py \
+  --model meta-llama/CodeLlama-34b-hf \
+  --tokenizer-model hf-internal-testing/llama-tokenizer \
+  --output /models/quarot-codellama-34b-gptq-int4 \
+  --cal-dataset wikitext2 \
+  --nsamples 128
+```
+
+## Real performance benchmark
+
+```bash
+python e2e/benchmark_real.py \
+  --int4-model /tmp/quarot-llama2-7b-rtn-int4 \
+  --fp16-model meta-llama/Llama-2-7b-hf \
+  --batch-size 1 \
+  --prefill-seq-len 2048 \
+  --decode-steps 128 \
+  --output /tmp/benchmark_real_llama2_7b_rtn.json
+```
+
+## Accuracy benchmark
+
+```bash
+python e2e/benchmark_accuracy.py \
+  --int4-model /tmp/quarot-llama2-7b-rtn-int4 \
+  --fp16-model meta-llama/Llama-2-7b-hf \
+  --output /tmp/benchmark_accuracy_llama2_7b_rtn.json
+```    
+
+## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=spcl/QuaRot&type=Date)](https://star-history.com/#spcl/QuaRot&Date)
 

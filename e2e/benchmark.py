@@ -4,16 +4,23 @@ import pprint
 import numpy as np
 import torch
 import time
+import sys
+from pathlib import Path
 
-from quantized_llama import modeling_llama
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from e2e.model_registry import runtime_types
 import torch
 import transformers
 
 model_configs = [
-    # "meta-llama/Llama-2-7b-hf",
+    "meta-llama/Llama-2-7b-hf",
     # "meta-llama/Llama-2-13b-hf",
-    # "meta-llama/Llama-2-70b-hf",
-    "meta-llama/CodeLlama-34b-hf",
+    # "meta-llama/CodeLlama-34b-hf",
+    # "Qwen/Qwen3-32B",
+    # "Qwen/Qwen2.5-32B",
+    # "meta-llama/Llama-3.1-8B",
 ]
 
 benchmark_dtypes = ["int4", torch.float16]
@@ -67,14 +74,13 @@ def module_benchmark(module):
 
 
 def get_model_quantized(config_name):
-    config = transformers.AutoConfig.from_pretrained(
-        config_name,
-        attn_implementation="flash_attention_2"
-    )
+    config_cls, int4_cls, _ = runtime_types(config_name)
+    config = config_cls.from_pretrained(
+        config_name, attn_implementation="flash_attention_2")
     dtype_old = torch.get_default_dtype()
     torch.set_default_dtype(torch.float16)
     with transformers.modeling_utils.no_init_weights():
-        model = modeling_llama.QuarotLlamaForCausalLM(config=config)
+        model = int4_cls(config=config)
     torch.set_default_dtype(dtype_old)
     return model
 
@@ -87,7 +93,8 @@ def get_model_hf(config_name):
     )
 
 def get_model_fp16(config_name):
-    return modeling_llama.QuarotFP16LlamaForCausalLM.from_pretrained(
+    _, _, fp16_cls = runtime_types(config_name)
+    return fp16_cls.from_pretrained(
         config_name,
         torch_dtype=torch.float16,
         attn_implementation="flash_attention_2"
