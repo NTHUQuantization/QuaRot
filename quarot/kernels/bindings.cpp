@@ -173,11 +173,16 @@ void batch_decode_i4(torch::Tensor o, torch::Tensor q, torch::Tensor kv_data,
   CHECK_EQ(kv_param.scalar_type(), at::ScalarType::Half);
 
   int num_layers = static_cast<int>(kv_data.size(1));
-  int num_heads = static_cast<int>(kv_data.size(3));
+  int num_kv_heads = static_cast<int>(kv_data.size(3));
+  int num_q_heads = static_cast<int>(q.size(1));
   int page_size = static_cast<int>(kv_data.size(4));
   int head_dim = static_cast<int>(kv_data.size(5)) * 2;
   int batch_size = static_cast<int>(o.size(0));
   CHECK_SHAPE(o, q);
+  CHECK_EQ(q.size(2), head_dim);
+  TORCH_CHECK(num_kv_heads > 0 && num_q_heads % num_kv_heads == 0,
+              "num_q_heads must be divisible by num_kv_heads");
+  CHECK_EQ(kv_param.size(3), num_kv_heads);
   CHECK_EQ(kv_indptr.size(0), batch_size + 1);
   CHECK_EQ(last_page_offset.size(0), batch_size);
   TORCH_CHECK(head_dim == 64 || head_dim == 128, "head_dim must be 64 or 128");
@@ -186,12 +191,12 @@ void batch_decode_i4(torch::Tensor o, torch::Tensor q, torch::Tensor kv_data,
       (__half *)o.data_ptr(), (__half *)q.data_ptr(),
       (void *)kv_data.data_ptr(), (__half2 *)kv_param.data_ptr(),
       kv_indptr.data_ptr<int32_t>(), kv_indicies.data_ptr<int32_t>(),
-      last_page_offset.data_ptr<int32_t>(), num_layers, layer_idx, num_heads,
+      last_page_offset.data_ptr<int32_t>(), num_layers, layer_idx, num_q_heads, num_kv_heads,
       page_size, batch_size); } else { FlashInferBatchDecodeKernel_i4<128>(
       (__half *)o.data_ptr(), (__half *)q.data_ptr(),
       (void *)kv_data.data_ptr(), (__half2 *)kv_param.data_ptr(),
       kv_indptr.data_ptr<int32_t>(), kv_indicies.data_ptr<int32_t>(),
-      last_page_offset.data_ptr<int32_t>(), num_layers, layer_idx, num_heads,
+      last_page_offset.data_ptr<int32_t>(), num_layers, layer_idx, num_q_heads, num_kv_heads,
       page_size, batch_size); }
 }
 
@@ -319,11 +324,16 @@ void batch_decode_f16(torch::Tensor o, torch::Tensor q, torch::Tensor kv_data,
   CHECK_EQ(kv_param.scalar_type(), at::ScalarType::Half);
 
   int num_layers = static_cast<int>(kv_data.size(1));
-  int num_heads = static_cast<int>(kv_data.size(3));
+  int num_kv_heads = static_cast<int>(kv_data.size(3));
+  int num_q_heads = static_cast<int>(q.size(1));
   int page_size = static_cast<int>(kv_data.size(4));
   int head_dim = static_cast<int>(kv_data.size(5));
   int batch_size = static_cast<int>(o.size(0));
   CHECK_SHAPE(o, q);
+  CHECK_EQ(q.size(2), head_dim);
+  TORCH_CHECK(num_kv_heads > 0 && num_q_heads % num_kv_heads == 0,
+              "num_q_heads must be divisible by num_kv_heads");
+  CHECK_EQ(kv_param.size(3), num_kv_heads);
   CHECK_EQ(kv_indptr.size(0), batch_size + 1);
   CHECK_EQ(last_page_offset.size(0), batch_size);
   TORCH_CHECK(head_dim == 64 || head_dim == 128, "head_dim must be 64 or 128");
@@ -331,12 +341,12 @@ void batch_decode_f16(torch::Tensor o, torch::Tensor q, torch::Tensor kv_data,
       (__half *)o.data_ptr(), (__half *)q.data_ptr(),
       (void *)kv_data.data_ptr(), (__half2 *)kv_param.data_ptr(),
       kv_indptr.data_ptr<int32_t>(), kv_indicies.data_ptr<int32_t>(),
-      last_page_offset.data_ptr<int32_t>(), num_layers, layer_idx, num_heads,
+      last_page_offset.data_ptr<int32_t>(), num_layers, layer_idx, num_q_heads, num_kv_heads,
       page_size, batch_size); } else { FlashInferBatchDecodeKernel_f16<128>(
       (__half *)o.data_ptr(), (__half *)q.data_ptr(),
       (void *)kv_data.data_ptr(), (__half2 *)kv_param.data_ptr(),
       kv_indptr.data_ptr<int32_t>(), kv_indicies.data_ptr<int32_t>(),
-      last_page_offset.data_ptr<int32_t>(), num_layers, layer_idx, num_heads,
+      last_page_offset.data_ptr<int32_t>(), num_layers, layer_idx, num_q_heads, num_kv_heads,
       page_size, batch_size); }
 }
 

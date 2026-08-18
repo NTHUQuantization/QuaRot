@@ -13,14 +13,14 @@ void FlashInferBatchDecodeKernel_i4(__half* o, __half* q, void* kv_data,
                                     __half2* kv_param, int32_t* kv_indptr,
                                     int32_t* kv_indicies,
                                     int32_t* last_page_offset, int num_layers,
-                                    int layer_idx, int num_heads, int page_size,
+                                    int layer_idx, int num_q_heads, int num_kv_heads, int page_size,
                                     int batch_size) {
   using DTypeIn = flashinfer::quant::__precision__s4;
   using DTypeInQ = __half;
   using DTypeOut = __half;
 
   flashinfer::paged_kv_t<DTypeIn, int32_t> paged_kv(
-      num_layers, layer_idx, num_heads, page_size, head_dim, batch_size,
+      num_layers, layer_idx, num_kv_heads, page_size, head_dim, batch_size,
       (DTypeIn*)kv_data, kv_param, kv_indptr, kv_indicies, last_page_offset);
 
   const float rope_scale = 1.f;
@@ -40,7 +40,7 @@ void FlashInferBatchDecodeKernel_i4(__half* o, __half* q, void* kv_data,
     : (head_dim / 32);
   constexpr size_t bdx = head_dim / vec_size;
   constexpr size_t bdy = 128 / bdx;
-  dim3 nblks(paged_kv.batch_size, paged_kv.num_heads);
+  dim3 nblks(paged_kv.batch_size, num_q_heads);
   dim3 nthrs(bdx, bdy);
 
  hipLaunchKernelGGL(( flashinfer::BatchDecodeWithPagedKVCacheKernel<
@@ -113,14 +113,14 @@ void FlashInferBatchDecodeKernel_f16(__half* o, __half* q, void* kv_data,
                                     __half2* kv_param, int32_t* kv_indptr,
                                     int32_t* kv_indicies,
                                     int32_t* last_page_offset, int num_layers,
-                                    int layer_idx, int num_heads, int page_size,
+                                    int layer_idx, int num_q_heads, int num_kv_heads, int page_size,
                                     int batch_size) {
   using DTypeIn = __half;
   using DTypeInQ = __half;
   using DTypeOut = __half;
 
   flashinfer::paged_kv_t<DTypeIn, int32_t> paged_kv(
-      num_layers, layer_idx, num_heads, page_size, head_dim, batch_size,
+      num_layers, layer_idx, num_kv_heads, page_size, head_dim, batch_size,
       (DTypeIn*)kv_data, kv_param, kv_indptr, kv_indicies, last_page_offset);
 
   const float rope_scale = 1.f;
@@ -140,7 +140,7 @@ void FlashInferBatchDecodeKernel_f16(__half* o, __half* q, void* kv_data,
     : (head_dim / 32);
   constexpr size_t bdx = head_dim / vec_size;
   constexpr size_t bdy = 128 / bdx;
-  dim3 nblks(paged_kv.batch_size, paged_kv.num_heads);
+  dim3 nblks(paged_kv.batch_size, num_q_heads);
   dim3 nthrs(bdx, bdy);
  hipLaunchKernelGGL(( flashinfer::BatchDecodeWithPagedKVCacheKernel<
       rotary_mode, norm_on_the_fly, vec_size, bdx, bdy, FoldFactor, DTypeInQ,
@@ -210,7 +210,7 @@ constexpr size_t vec_size = (vec_size_a > vec_size_b ? vec_size_a : vec_size_b);
 template void FlashInferBatchDecodeKernel_i4<64>(
     __half* o, __half* q, void* kv_data, __half2* kv_param,
     int32_t* kv_indptr, int32_t* kv_indicies, int32_t* last_page_offset,
-    int num_layers, int layer_idx, int num_heads, int page_size, int batch_size);
+    int num_layers, int layer_idx, int num_q_heads, int num_kv_heads, int page_size, int batch_size);
 template void FlashInferInitKvKernel_i4<64>(
     void* kv_data, __half2* kv_param, int32_t* kv_indptr, int32_t* kv_indicies,
     int32_t* last_page_offset, void* key, void* value, __half2* key_param,
@@ -224,7 +224,7 @@ template void FlashInferAppendKvKernel_i4<64>(
 template void FlashInferBatchDecodeKernel_f16<64>(
     __half* o, __half* q, void* kv_data, __half2* kv_param,
     int32_t* kv_indptr, int32_t* kv_indicies, int32_t* last_page_offset,
-    int num_layers, int layer_idx, int num_heads, int page_size, int batch_size);
+    int num_layers, int layer_idx, int num_q_heads, int num_kv_heads, int page_size, int batch_size);
 template void FlashInferInitKvKernel_f16<64>(
     void* kv_data, __half2* kv_param, int32_t* kv_indptr, int32_t* kv_indicies,
     int32_t* last_page_offset, void* key, void* value, __half2* key_param,
@@ -239,7 +239,7 @@ template void FlashInferAppendKvKernel_f16<64>(
 template void FlashInferBatchDecodeKernel_i4<128>(
     __half* o, __half* q, void* kv_data, __half2* kv_param,
     int32_t* kv_indptr, int32_t* kv_indicies, int32_t* last_page_offset,
-    int num_layers, int layer_idx, int num_heads, int page_size,
+    int num_layers, int layer_idx, int num_q_heads, int num_kv_heads, int page_size,
     int batch_size);
 
 template void FlashInferInitKvKernel_i4<128>(
@@ -258,7 +258,7 @@ template void FlashInferAppendKvKernel_i4<128>(
 template void FlashInferBatchDecodeKernel_f16<128>(
     __half* o, __half* q, void* kv_data, __half2* kv_param,
     int32_t* kv_indptr, int32_t* kv_indicies, int32_t* last_page_offset,
-    int num_layers, int layer_idx, int num_heads, int page_size,
+    int num_layers, int layer_idx, int num_q_heads, int num_kv_heads, int page_size,
     int batch_size);
 
 template void FlashInferInitKvKernel_f16<128>(

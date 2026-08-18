@@ -256,7 +256,7 @@ def test_cache_hadamard_preserves_qk_across_query_and_key_ranks():
     torch.testing.assert_close(transformed, reference, rtol=2e-3, atol=4e-2)
 
 
-def test_gqa_prefill_quantizes_before_cache_head_expansion(monkeypatch):
+def test_gqa_cache_keeps_native_kv_heads(monkeypatch):
     import quarot.transformers.kv_cache as kv_cache
 
     observed_heads = []
@@ -278,8 +278,57 @@ def test_gqa_prefill_quantizes_before_cache_head_expansion(monkeypatch):
 
     assert observed_heads == [2, 2]
     assert returned_key is key and returned_value is value
-    for plane in (0, 1):
-        assert torch.equal(cache.pages[:, 0, plane, 0], cache.pages[:, 0, plane, 1])
-        assert torch.equal(cache.pages[:, 0, plane, 2], cache.pages[:, 0, plane, 3])
-        assert torch.equal(cache.scales[:, 0, plane, 0], cache.scales[:, 0, plane, 1])
-        assert torch.equal(cache.scales[:, 0, plane, 2], cache.scales[:, 0, plane, 3])
+    assert cache.pages.shape[3] == 2
+    assert cache.scales.shape[3] == 2
+
+
+@pytest.mark.parametrize("disable_quant", [False, True])
+@pytest.mark.parametrize("num_q_heads,num_kv_heads,head_dim", [
+    (4, 2, 64),
+    (32, 8, 128),  # meta-llama/Llama-3.1-8B
+    (64, 8, 128),  # meta-llama/CodeLlama-34b-hf
+])
+def test_native_gqa_fused_decode_matches_explicit_grouped_reference(
+        disable_quant, num_q_heads, num_kv_heads, head_dim):
+    from quarot.transformers.kv_cache import (
+        MultiLayerPagedKVCache4Bit, matmul_had_HIP,
+        unpack_i4_and_asym_dequantize)
+
+    torch.manual_seed(num_q_heads * 1000 + head_dim + int(disable_quant))
+    cache = MultiLayerPagedKVCache4Bit(
+        batch_size=1, page_size=8, max_seq_len=8, device="cuda",
+        n_layers=1, num_heads=num_q_heads, num_kv_heads=num_kv_heads,
+        head_dim=head_dim, disable_quant=disable_quant,
+        hadamard_dtype=None if disable_quant else torch.float16)
+    key = torch.randn(1, 4, num_kv_heads, head_dim, device="cuda", dtype=torch.float16)
+    value = torch.randn_like(key)
+    cache.update(key, value, 0, {})
+    next_key = torch.randn(1, 1, num_kv_heads, head_dim, device="cuda", dtype=torch.float16)
+    next_value = torch.randn_like(next_key)
+    attention = cache.update(next_key, next_value, 0, {})
+    query = torch.randn(1, 1, num_q_heads, head_dim, device="cuda", dtype=torch.float16)
+    actual = attention(query).squeeze(1)
+
+    assert cache.pages.shape[3] == num_kv_heads
+    if disable_quant:
+        cached_key = cache.pages[0, 0, 0, :, :5].permute(1, 0, 2)
+        cached_value = cache.pages[0, 0, 1, :, :5].permute(1, 0, 2)
+        reference_query = query.squeeze(1)
+    else:
+        cached = []
+        for plane in (0, 1):
+            packed = cache.pages[0, 0, plane, :, :5].permute(1, 0, 2)
+            params = cache.scales[0, 0, plane, :, :5].permute(1, 0, 2)
+            cached.append(unpack_i4_and_asym_dequantize(
+                packed, params[..., :1], params[..., 1:]))
+        cached_key, cached_value = cached
+        reference_query = matmul_had_HIP(query.squeeze(1), torch.float16)
+
+    repeats = num_q_heads // num_kv_heads
+    cached_key = cached_key.repeat_interleave(repeats, dim=1).float()
+    cached_value = cached_value.repeat_interleave(repeats, dim=1).float()
+    scores = torch.einsum("bhd,shd->bhs", reference_query.float(), cached_key)
+    scores /= math.sqrt(head_dim)
+    expected = torch.einsum("bhs,shd->bhd", scores.softmax(dim=-1), cached_value)
+    torch.cuda.synchronize()
+    torch.testing.assert_close(actual.float(), expected, rtol=3e-3, atol=3e-3)

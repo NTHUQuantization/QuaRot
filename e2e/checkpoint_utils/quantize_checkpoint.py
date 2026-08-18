@@ -1,4 +1,4 @@
-"""Convert a dense Llama, Qwen2.5, or Qwen3 checkpoint to QuaRot INT4."""
+"""Convert dense Llama 2/3.1, CodeLlama, Qwen2.5, or Qwen3 to QuaRot INT4."""
 import argparse
 import json
 import shutil

@@ -505,8 +505,11 @@ __global__ void BatchDecodeWithPagedKVCacheKernel(
   constexpr size_t num_stages_smem = 4;
   constexpr size_t head_dim = bdx * vec_size;
   size_t batch_idx = blockIdx.x;
-  size_t head_idx = blockIdx.y;
-  size_t num_heads = gridDim.y;
+  size_t q_head_idx = blockIdx.y;
+  size_t num_q_heads = gridDim.y;
+  size_t num_kv_heads = paged_kv.num_heads;
+  size_t group_size = num_q_heads / num_kv_heads;
+  size_t kv_head_idx = q_head_idx / group_size;
   
   // [cur_page_indptr_begin, cur_page_indptr_end)
   size_t cur_page_indptr_begin = paged_kv.indptr[batch_idx], cur_page_indptr_end = paged_kv.indptr[batch_idx + 1];
@@ -539,14 +542,14 @@ __global__ void BatchDecodeWithPagedKVCacheKernel(
     }
     // apply rotary embedding to q matrix
     q_vec = apply_llama_rope<vec_size, bdx>(
-      quant::get_ptr(q, (batch_idx * num_heads + head_idx) * head_dim),
+      quant::get_ptr(q, (batch_idx * num_q_heads + q_head_idx) * head_dim),
       freq,
       seq_len - 1
     );
   } else {
     // do not apply rotary embedding to q matrix
     q_vec.cast_load(
-      quant::get_ptr(q, (batch_idx * num_heads + head_idx) * head_dim + tx * vec_size)
+      quant::get_ptr(q, (batch_idx * num_q_heads + q_head_idx) * head_dim + tx * vec_size)
     );
   }
   block.sync();
@@ -581,13 +584,13 @@ __global__ void BatchDecodeWithPagedKVCacheKernel(
                                (ty_mem < bdy);
     cp_async::pred_load<vec_bits, true>(
       quant::get_ptr(k_smem, (stage_idx * bdy + ty_mem) * head_dim + tx_mem * vec_size * FoldFactor),
-      quant::get_ptr(paged_kv.data, paged_kv.get_k_elem_offset(producer_page_idx, head_idx, producer_entry_base + ty_mem, tx_mem * vec_size * FoldFactor)),
+      quant::get_ptr(paged_kv.data, paged_kv.get_k_elem_offset(producer_page_idx, kv_head_idx, producer_entry_base + ty_mem, tx_mem * vec_size * FoldFactor)),
       producer_pred_guard
     );
     cp_async::commit_group();
     cp_async::pred_load<vec_bits, true>(
       quant::get_ptr(v_smem, (stage_idx * bdy + ty_mem) * head_dim + tx_mem * vec_size * FoldFactor),
-      quant::get_ptr(paged_kv.data, paged_kv.get_v_elem_offset(producer_page_idx, head_idx, producer_entry_base + ty_mem, tx_mem * vec_size * FoldFactor)),
+      quant::get_ptr(paged_kv.data, paged_kv.get_v_elem_offset(producer_page_idx, kv_head_idx, producer_entry_base + ty_mem, tx_mem * vec_size * FoldFactor)),
       producer_pred_guard
     );
     cp_async::commit_group();
@@ -631,10 +634,10 @@ __global__ void BatchDecodeWithPagedKVCacheKernel(
       float2 paramK, paramV;
       if(consumer_pred_guard){
         paramK = __half22float2(
-          quant::get_ptr(paged_kv.param, paged_kv.get_param_k_elem_offset(consumer_kv_page_idx, head_idx, consumer_kv_entry))[0]
+          quant::get_ptr(paged_kv.param, paged_kv.get_param_k_elem_offset(consumer_kv_page_idx, kv_head_idx, consumer_kv_entry))[0]
         );
         paramV = __half22float2(
-          quant::get_ptr(paged_kv.param, paged_kv.get_param_v_elem_offset(consumer_kv_page_idx, head_idx, consumer_kv_entry))[0]
+          quant::get_ptr(paged_kv.param, paged_kv.get_param_v_elem_offset(consumer_kv_page_idx, kv_head_idx, consumer_kv_entry))[0]
         );
       }
 
@@ -643,7 +646,7 @@ __global__ void BatchDecodeWithPagedKVCacheKernel(
       compute_qk<rotary_mode, vec_size, bdx>(
         quant::get_ptr(k_smem, (stage_idx * bdy + ty) * head_dim), 
         q_vec, freq, 
-        consumer_kv_idx_base, stage_idx, num_heads,
+        consumer_kv_idx_base, stage_idx, num_q_heads,
         sm_scale, x,
         paramK.x, paramK.y
       );
@@ -660,7 +663,7 @@ __global__ void BatchDecodeWithPagedKVCacheKernel(
       // load k tiles
       cp_async::pred_load<vec_bits, true>(
         quant::get_ptr(k_smem, (stage_idx * bdy + ty_mem) * head_dim + tx_mem * vec_size * FoldFactor),
-        quant::get_ptr(paged_kv.data, paged_kv.get_k_elem_offset(producer_page_idx, head_idx, producer_entry_base + ty_mem, tx_mem * vec_size * FoldFactor)),
+        quant::get_ptr(paged_kv.data, paged_kv.get_k_elem_offset(producer_page_idx, kv_head_idx, producer_entry_base + ty_mem, tx_mem * vec_size * FoldFactor)),
         producer_pred_guard
       );
       cp_async::commit_group();
@@ -678,7 +681,7 @@ __global__ void BatchDecodeWithPagedKVCacheKernel(
       // load v tiles
       cp_async::pred_load<vec_bits, true>(
         quant::get_ptr(v_smem, (stage_idx * bdy + ty_mem) * head_dim + tx_mem * vec_size * FoldFactor),
-        quant::get_ptr(paged_kv.data, paged_kv.get_v_elem_offset(producer_page_idx, head_idx, producer_entry_base + ty_mem, tx_mem * vec_size * FoldFactor)),
+        quant::get_ptr(paged_kv.data, paged_kv.get_v_elem_offset(producer_page_idx, kv_head_idx, producer_entry_base + ty_mem, tx_mem * vec_size * FoldFactor)),
         producer_pred_guard
       );
       cp_async::commit_group();
@@ -695,7 +698,7 @@ __global__ void BatchDecodeWithPagedKVCacheKernel(
   s.normalize();
 
   // update global states
-  s.o.cast_store(o + (batch_idx * num_heads + head_idx) * head_dim + tx * vec_size);
+  s.o.cast_store(o + (batch_idx * num_q_heads + q_head_idx) * head_dim + tx * vec_size);
 }
 
 /*!

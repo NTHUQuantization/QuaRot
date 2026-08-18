@@ -63,10 +63,6 @@ python e2e/checkpoint_utils/quantize_checkpoint.py \
   --nsamples 128
 ```
 
-GPTQ supports dense Llama, Qwen2, and Qwen3 safetensors checkpoints. It streams
-one layer at a time, propagates calibration activations through the transformed
-runtime-equivalent layer, and writes resumable packed output shards.
-
 ## Real performance benchmark
 
 ```bash

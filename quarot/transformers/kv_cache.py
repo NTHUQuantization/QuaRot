@@ -160,10 +160,9 @@ class MultiLayerPagedKVCache4Bit(Cache):
         self.num_kv_heads = num_heads if num_kv_heads is None else num_kv_heads
         if self.num_q_heads % self.num_kv_heads != 0:
             raise ValueError("num_attention_heads must be divisible by num_key_value_heads")
-        # FlashInfer in this target only has an MHA decode kernel.  Expand KV
-        # heads once on cache write for correct GQA mapping; this is retained as
-        # a compatibility fallback until a native GQA decode kernel is added.
-        self.cache_heads = self.num_q_heads
+        # Store only physical KV heads. The fused paged-attention kernel maps
+        # each query head to its grouped KV head during decode.
+        self.cache_heads = self.num_kv_heads
         # transformers.Cache exposes ``batch_size`` as a read-only property.
         # Store the value privately and expose it below so this cache keeps the
         # same public API without assigning to the base-class descriptor.
@@ -229,18 +228,6 @@ class MultiLayerPagedKVCache4Bit(Cache):
             not self.disable_quant and not self._needs_init[layer_idx] and added_length == 1
         )
 
-        # Keep prefill in the model's native KV-head layout through Hadamard and
-        # INT4 packing. CodeLlama-34B has 8 KV heads but 64 query heads;
-        # expanding FP16 K/V first creates two 2 GiB temporaries for B=8,
-        # S=2048 and can exhaust a 32 GiB device. The current decode kernel
-        # still requires an MHA-layout cache, so replicate only the packed
-        # values and their small quantization parameters below.
-        if use_fused_append and self.cache_heads != num_heads:
-            repeats = self.cache_heads // num_heads
-            key_states = key_states.repeat_interleave(repeats, dim=2)
-            value_states = value_states.repeat_interleave(repeats, dim=2)
-            num_heads = self.cache_heads
-
         if not use_fused_append and self.hadamard_dtype is not None:
             key_states = matmul_had_HIP(key_states, dtype=self.hadamard_dtype)
 
@@ -257,16 +244,6 @@ class MultiLayerPagedKVCache4Bit(Cache):
             key_states, k_scale, k_zero = asym_quantize_and_pack_i4(key_states)
             value_states, v_scale, v_zero = asym_quantize_and_pack_i4(value_states)
         
-        if not use_fused_append and self.cache_heads != num_heads:
-            repeats = self.cache_heads // num_heads
-            key_states = key_states.repeat_interleave(repeats, dim=2)
-            value_states = value_states.repeat_interleave(repeats, dim=2)
-            k_scale = k_scale.repeat_interleave(repeats, dim=2)
-            k_zero = k_zero.repeat_interleave(repeats, dim=2)
-            v_scale = v_scale.repeat_interleave(repeats, dim=2)
-            v_zero = v_zero.repeat_interleave(repeats, dim=2)
-            num_heads = self.cache_heads
-
         if not use_fused_append:
             k_param = torch.cat([k_scale, k_zero], dim=-1).view(self.batch_size * added_length, num_heads, 2)
             v_param = torch.cat([v_scale, v_zero], dim=-1).view(self.batch_size * added_length, num_heads, 2)
