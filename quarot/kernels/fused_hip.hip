@@ -167,8 +167,11 @@ __global__ void fused_append_kv_i4_kernel(
   }
   __syncthreads();
 
-  hadamard(v_values, HeadDim);
-  float vx = v_values[tid] * rsqrtf(float(HeadDim));
+  // V is already in the per-head Hadamard basis: rotate_ov_proj() folds the
+  // transform into v_proj and the matching transform into o_proj.  Only K
+  // needs an online Hadamard (paired with the query Hadamard).  Applying H to
+  // V here made decode appends use a different basis from prefill entries.
+  float vx = v_values[tid];
   v_values[tid] = vx;
   float vmax = reduce_max(vx, scratch);
   __syncthreads();

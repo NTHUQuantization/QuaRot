@@ -5,8 +5,99 @@ import tqdm
 import torch
 import torch.nn as nn
 import logging
+import os
+import shutil
+from pathlib import Path
 
 from quarot.functional import asym_quant_dequant, sym_quant_dequant
+
+_RTN_CACHE_VERSION = 3
+
+def _rtn_cache_signature(args, layer):
+    return {
+        "version": _RTN_CACHE_VERSION,
+        "model": str(getattr(args, "model", "")),
+        "seed": int(getattr(args, "seed", 0)),
+        "rotation_device": str(getattr(args, "rotation_device", "")),
+        "rotation_dtype": str(getattr(args, "rotation_dtype", "")),
+        "w_bits": int(args.w_bits),
+        "w_groupsize": int(args.w_groupsize),
+        "w_asym": bool(args.w_asym),
+        "w_clip": bool(args.w_clip),
+        "parameters": {name: (tuple(p.shape), str(p.dtype))
+                       for name, p in layer.named_parameters()},
+    }
+
+def _serialize_quantizer(q):
+    return {
+        "bits": q.bits, "perchannel": q.perchannel, "sym": q.sym,
+        "mse": q.mse, "norm": q.norm, "grid": q.grid,
+        "maxshrink": q.maxshrink, "maxq": q.maxq.detach().cpu(),
+        "scale": q.scale.detach().cpu(), "zero": q.zero.detach().cpu(),
+    }
+
+def _deserialize_quantizer(state):
+    q = WeightQuantizer()
+    q.configure(state["bits"], perchannel=state["perchannel"],
+                sym=state["sym"], mse=state["mse"], norm=state["norm"],
+                grid=state["grid"], maxshrink=state["maxshrink"])
+    q.maxq, q.scale, q.zero = state["maxq"], state["scale"], state["zero"]
+    return q
+
+def _apply_cached_quantizers(layer, quantizers):
+    modules = dict(layer.named_modules())
+    for name, quantizer in quantizers.items():
+        module = modules[name]
+        module.weight.data = quantizer.quantize(module.weight.data)
+
+def _load_rtn_layer_cache(path, signature, layer):
+    if not path.is_file():
+        return None
+    try:
+        payload = torch.load(path, map_location="cpu", weights_only=True)
+        if payload.get("signature") != signature:
+            logging.warning("Ignoring incompatible RtN cache entry %s", path)
+            return None
+        quantizers = {name: _deserialize_quantizer(state)
+                      for name, state in payload["quantizers"].items()}
+        expected_quantizers = {name for name, module in layer.named_modules()
+                               if type(module) is torch.nn.Linear}
+        valid_quantizers = all(
+            quantizer.ready()
+            and quantizer.scale.shape[0] == dict(layer.named_modules())[name].out_features
+            for name, quantizer in quantizers.items())
+        if quantizers.keys() != expected_quantizers or not valid_quantizers:
+            logging.warning("Ignoring incomplete RtN cache entry %s", path)
+            return None
+        _apply_cached_quantizers(layer, quantizers)
+        return quantizers
+    except Exception as error:
+        logging.warning("Ignoring unreadable RtN cache entry %s: %s", path, error)
+        return None
+
+def _save_rtn_layer_cache(path, signature, layer, quantizers):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "signature": signature,
+        "quantizers": {name: _serialize_quantizer(q)
+                       for name, q in quantizers.items()},
+    }
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        try:
+            torch.save(payload, temporary)
+        except (OSError, RuntimeError) as error:
+            free = shutil.disk_usage(path.parent).free
+            partial = temporary.stat().st_size if temporary.exists() else 0
+            raise RuntimeError(
+                f"Failed to write RtN cache entry {path} "
+                f"({free / 2**30:.2f} GiB free; partial write "
+                f"{partial / 2**20:.1f} MiB). Free space or choose a cache "
+                "directory on a larger filesystem.") from error
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
 
 torch.backends.cuda.matmul.allow_tf32 = False
 torch.backends.cudnn.allow_tf32 = False
@@ -388,9 +479,21 @@ def rtn_fwrd(model, dev, args):
     torch.cuda.empty_cache()
 
     quantizers = {}
+    cache_dir_arg = getattr(args, "rtn_cache_dir", None)
+    cache_dir = Path(cache_dir_arg) if cache_dir_arg else None
 
     for i in tqdm.tqdm(range(len(layers)), desc="(RtN Quant.) Layers"):
+        signature = _rtn_cache_signature(args, layers[i])
+        cache_path = cache_dir / f"layer_{i:05d}.pt" if cache_dir else None
+        cached = (_load_rtn_layer_cache(cache_path, signature, layers[i])
+                  if cache_path else None)
+        if cached is not None:
+            quantizers.update({f"model.layers.{i}.{name}": q
+                               for name, q in cached.items()})
+            logging.info("Loaded RtN layer %d from %s", i, cache_path)
+            continue
         layer = layers[i].to(dev)
+        layer_quantizers = {}
 
         for name, module in layer.named_modules():
             if type(module) != torch.nn.Linear:
@@ -409,7 +512,11 @@ def rtn_fwrd(model, dev, args):
             module.weight.data = quantizer.quantize(W).to(
                 next(iter(layer.parameters())).dtype)
             quantizers['model.layers.%d.%s' % (i, name)] = quantizer.cpu()
+            layer_quantizers[name] = quantizer
         layers[i] = layer.cpu()
+        if cache_path:
+            _save_rtn_layer_cache(
+                cache_path, signature, layers[i], layer_quantizers)
         torch.cuda.empty_cache()
         del layer
 

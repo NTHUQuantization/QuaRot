@@ -4,7 +4,6 @@ import math
 import torch
 from .. import _HIP
 import functools
-from fast_hadamard_transform import hadamard_transform
 from quarot.functional.quantization import get_minq_maxq
 
 @torch.jit.script
@@ -28,9 +27,20 @@ def unpack_i4_and_asym_dequantize(q, scale, zero):
     return q * scale - zero
 
 def matmul_had_HIP(X, dtype):
+    # The HIP FHT extension selects different effective row layouts for the
+    # rank-3 decode query and rank-4 prefill key tensors. Use an explicit
+    # last-dimension butterfly so Q and K always receive the same basis.
     n = X.shape[-1]
-    input = hadamard_transform(X.to(dtype).contiguous(), scale=1/math.sqrt(n))
-    return input.to(X.dtype).view(X.shape) 
+    output = X.to(dtype).contiguous().clone()
+    stride = 1
+    while stride < n:
+        shaped = output.view(*output.shape[:-1], -1, stride * 2)
+        left = shaped[..., :stride].clone()
+        right = shaped[..., stride:].clone()
+        shaped[..., :stride] = left + right
+        shaped[..., stride:] = left - right
+        stride *= 2
+    return (output / math.sqrt(n)).to(X.dtype)
 
 
 def init_kv_i4(kv_data, kv_param,

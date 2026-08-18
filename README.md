@@ -27,13 +27,13 @@ python -m pip install -e . --no-build-isolation -v
 ## synthetic benchmark
 
 ```bash
-python benchmark.py \
+python e2e/benchmark.py \
       --batch_size 1 \
       --prefill_seq_len 2048 \
       --decode_steps 128 \
       --int4_only
 ```
-"--int4_only" is required to run CodeLlama-34b-hf
+`--int4_only` is required to run CodeLlama-34b-hf.
 
 
 ## Generate int4 checkpoint
@@ -43,10 +43,14 @@ python benchmark.py \
 python e2e/checkpoint_utils/quantize_checkpoint.py \
   --model meta-llama/CodeLlama-34b-hf \
   --output /models/quarot-codellama-34b-rtn-int4 \
-  --w-rtn \
   --rotation-device cuda \
   --rotation-dtype float32
 ```
+
+RTN is the default quantization method. It streams safetensors checkpoints one
+layer at a time. Each packed layer is written directly under `--output`; re-run
+the same command to resume from those completed shards. The dense FP16 model is
+never held in host RAM.
 
 ### GPTQ
 ```bash
@@ -54,9 +58,14 @@ python e2e/checkpoint_utils/quantize_checkpoint.py \
   --model meta-llama/CodeLlama-34b-hf \
   --tokenizer-model hf-internal-testing/llama-tokenizer \
   --output /models/quarot-codellama-34b-gptq-int4 \
+  --quant-method gptq \
   --cal-dataset wikitext2 \
   --nsamples 128
 ```
+
+GPTQ supports dense Llama, Qwen2, and Qwen3 safetensors checkpoints. It streams
+one layer at a time, propagates calibration activations through the transformed
+runtime-equivalent layer, and writes resumable packed output shards.
 
 ## Real performance benchmark
 
@@ -75,7 +84,7 @@ python e2e/benchmark_real.py \
 ```bash
 python e2e/benchmark_accuracy.py \
   --int4-model /tmp/quarot-llama2-7b-rtn-int4 \
-  --fp16-model meta-llama/Llama-2-7b-hf \
+  --reference-model meta-llama/Llama-2-7b-hf \
   --output /tmp/benchmark_accuracy_llama2_7b_rtn.json
 ```    
 

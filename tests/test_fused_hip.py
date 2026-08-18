@@ -85,7 +85,9 @@ def test_fused_kv_append_writes_target_asymmetric_cache(head_dim, page_size, pos
         slot = (position - 1) % page_size
         page_ids = indices[indptr[:-1] + page]
         for source, plane in ((key, 0), (value, 1)):
-            rotated = _hadamard(source)
+            # K is transformed online together with Q. V has already had the
+            # per-head transform folded into v_proj during checkpoint rotation.
+            rotated = _hadamard(source) if plane == 0 else source.float()
             xmin, xmax = rotated.amin(dim=-1, keepdim=True), rotated.amax(dim=-1, keepdim=True)
             scale = ((xmax - xmin).clamp_min(1e-5) / 15).half()
             zero = (-xmin).half()
@@ -234,6 +236,24 @@ def test_single_fp16lds_large_ffn_agrees_with_fp32_contract(width, remainder):
     # FP16 LDS intentionally rounds at the inner/remainder boundary. Packed
     # decisions should remain stable except for values at INT4 thresholds.
     assert (packed == reference_packed).float().mean().item() >= 0.995
+
+
+def test_cache_hadamard_preserves_qk_across_query_and_key_ranks():
+    from quarot.transformers.kv_cache import matmul_had_HIP
+
+    torch.manual_seed(12832)
+    query = torch.randn(1, 32, 128, device="cuda", dtype=torch.float16)
+    key = torch.randn(1, 6, 32, 128, device="cuda", dtype=torch.float16)
+    query_before, key_before = query.clone(), key.clone()
+    transformed_query = matmul_had_HIP(query, torch.float16)
+    transformed_key = matmul_had_HIP(key, torch.float16)
+    reference = torch.einsum("bhd,bshd->bhs", query.float(), key.float())
+    transformed = torch.einsum(
+        "bhd,bshd->bhs", transformed_query.float(), transformed_key.float())
+
+    assert torch.equal(query, query_before)
+    assert torch.equal(key, key_before)
+    torch.testing.assert_close(transformed, reference, rtol=2e-3, atol=4e-2)
 
 
 def test_gqa_prefill_quantizes_before_cache_head_expansion(monkeypatch):
