@@ -59,6 +59,91 @@ torch::Tensor matmul_bpre(const torch::Tensor &A, const torch::Tensor &BPre,
     return C;
 }
 
+torch::Tensor matmul_bpre_grouped_scale(
+    const torch::Tensor &A, const torch::Tensor &BPre,
+    const torch::Tensor &scale_group, const torch::Tensor &scale_weight,
+    int64_t N, int64_t K)
+{
+    torch::checkAllContiguous("matmul_bpre_grouped_scale",
+        {{A, "A", 0}, {BPre, "BPre", 1}, {scale_group, "scale_group", 2},
+         {scale_weight, "scale_weight", 3}});
+    torch::checkDeviceType("matmul_bpre_grouped_scale",
+                           {A, BPre, scale_group, scale_weight}, at::DeviceType::CUDA);
+    torch::checkAllSameGPU("matmul_bpre_grouped_scale",
+        {{A, "A", 0}, {BPre, "BPre", 1}, {scale_group, "scale_group", 2},
+         {scale_weight, "scale_weight", 3}});
+    TORCH_CHECK(A.scalar_type() == torch::kUInt8 && BPre.scalar_type() == torch::kUInt8,
+                "A and BPre must be uint8");
+    TORCH_CHECK(scale_group.scalar_type() == torch::kHalf &&
+                scale_weight.scalar_type() == torch::kHalf,
+                "group and weight scales must be float16");
+    TORCH_CHECK(A.dim() == 2 && scale_group.dim() == 2,
+                "A and group scales must be matrices");
+    TORCH_CHECK(K > 0 && K % 128 == 0 && A.size(1) * 2 == K,
+                "invalid grouped-scale K");
+    TORCH_CHECK(scale_group.size(0) == A.size(0) && scale_group.size(1) > 0 &&
+                K % scale_group.size(1) == 0 &&
+                (K / scale_group.size(1)) % 32 == 0,
+                "invalid group scale shape");
+    TORCH_CHECK(scale_weight.numel() == N, "weight scales must contain N values");
+    TORCH_CHECK(static_cast<size_t>(BPre.numel()) >=
+                    prepack_b_host_size_bytes(static_cast<uint32_t>(N), static_cast<uint32_t>(K)),
+                "BPre is smaller than the required prepacked layout");
+    auto C = torch::empty({A.size(0), N}, A.options().dtype(torch::kHalf));
+    matmul_bpre_grouped_scale_host(
+        A.data_ptr<Int4Storage>(), BPre.data_ptr<Int4Storage>(),
+        reinterpret_cast<const half*>(scale_group.data_ptr<at::Half>()),
+        reinterpret_cast<const half*>(scale_weight.data_ptr<at::Half>()),
+        static_cast<uint32_t>(A.size(0)), static_cast<uint32_t>(N),
+        static_cast<uint32_t>(K), reinterpret_cast<half*>(C.data_ptr<at::Half>()),
+        static_cast<uint32_t>(scale_group.size(1)));
+    return C;
+}
+
+torch::Tensor matmul_bpre_multi_scale(
+    const torch::Tensor &A, const torch::Tensor &scale_activation,
+    const torch::Tensor &B0, const torch::Tensor &scale_weight0,
+    const torch::Tensor &B1, const torch::Tensor &scale_weight1,
+    const c10::optional<torch::Tensor> &B2_opt,
+    const c10::optional<torch::Tensor> &scale_weight2_opt,
+    int64_t N0, int64_t N1, int64_t N2, int64_t K)
+{
+    TORCH_CHECK(A.scalar_type() == torch::kUInt8 &&
+                B0.scalar_type() == torch::kUInt8 && B1.scalar_type() == torch::kUInt8,
+                "A and weights must be uint8");
+    TORCH_CHECK(scale_activation.scalar_type() == torch::kHalf &&
+                scale_weight0.scalar_type() == torch::kHalf &&
+                scale_weight1.scalar_type() == torch::kHalf,
+                "scales must be float16");
+    TORCH_CHECK(A.is_contiguous() && scale_activation.is_contiguous() &&
+                B0.is_contiguous() && B1.is_contiguous() &&
+                scale_weight0.is_contiguous() && scale_weight1.is_contiguous(),
+                "multi projection inputs must be contiguous");
+    TORCH_CHECK(A.is_cuda() && B0.is_cuda() && B1.is_cuda() &&
+                scale_activation.is_cuda() && scale_weight0.is_cuda() &&
+                scale_weight1.is_cuda(), "multi projection inputs must be CUDA tensors");
+    const Int4Storage *B2 = nullptr;
+    const half *S2 = nullptr;
+    if(N2 != 0) {
+        TORCH_CHECK(B2_opt.has_value() && scale_weight2_opt.has_value(),
+                    "third projection tensors are required when N2 is nonzero");
+        B2 = B2_opt.value().data_ptr<Int4Storage>();
+        S2 = reinterpret_cast<const half*>(scale_weight2_opt.value().data_ptr<at::Half>());
+    }
+    const uint32_t M = A.size(0);
+    auto C = torch::empty({M, N0 + N1 + N2}, A.options().dtype(torch::kHalf));
+    matmul_bpre_multi_scale_host(
+        A.data_ptr<Int4Storage>(), B0.data_ptr<Int4Storage>(),
+        B1.data_ptr<Int4Storage>(), B2,
+        reinterpret_cast<const half*>(scale_activation.data_ptr<at::Half>()),
+        reinterpret_cast<const half*>(scale_weight0.data_ptr<at::Half>()),
+        reinterpret_cast<const half*>(scale_weight1.data_ptr<at::Half>()), S2,
+        M, static_cast<uint32_t>(N0), static_cast<uint32_t>(N1),
+        static_cast<uint32_t>(N2), static_cast<uint32_t>(K),
+        reinterpret_cast<half*>(C.data_ptr<at::Half>()));
+    return C;
+}
+
 torch::Tensor sym_quant(const torch::Tensor &x, const torch::Tensor &scale)
 {
     torch::checkAllContiguous("sym_quant", {{x,     "x",     0},
@@ -173,25 +258,30 @@ void batch_decode_i4(torch::Tensor o, torch::Tensor q, torch::Tensor kv_data,
   CHECK_EQ(kv_param.scalar_type(), at::ScalarType::Half);
 
   int num_layers = static_cast<int>(kv_data.size(1));
-  int num_heads = static_cast<int>(kv_data.size(3));
+  int num_kv_heads = static_cast<int>(kv_data.size(3));
+  int num_q_heads = static_cast<int>(q.size(1));
   int page_size = static_cast<int>(kv_data.size(4));
   int head_dim = static_cast<int>(kv_data.size(5)) * 2;
   int batch_size = static_cast<int>(o.size(0));
   CHECK_SHAPE(o, q);
+  CHECK_EQ(q.size(2), head_dim);
+  TORCH_CHECK(num_kv_heads > 0 && num_q_heads % num_kv_heads == 0,
+              "num_q_heads must be divisible by num_kv_heads");
+  CHECK_EQ(kv_param.size(3), num_kv_heads);
   CHECK_EQ(kv_indptr.size(0), batch_size + 1);
   CHECK_EQ(last_page_offset.size(0), batch_size);
   TORCH_CHECK(head_dim == 64 || head_dim == 128, "head_dim must be 64 or 128");
 
-  if (head_dim == 64) { FlashInferBatchDecodeKernel_i4<64>(
+  if (head_dim == 64) { FlashInferBatchDecodeKernel_i4_gqa<64>(
       (__half *)o.data_ptr(), (__half *)q.data_ptr(),
       (void *)kv_data.data_ptr(), (__half2 *)kv_param.data_ptr(),
       kv_indptr.data_ptr<int32_t>(), kv_indicies.data_ptr<int32_t>(),
-      last_page_offset.data_ptr<int32_t>(), num_layers, layer_idx, num_heads,
-      page_size, batch_size); } else { FlashInferBatchDecodeKernel_i4<128>(
+      last_page_offset.data_ptr<int32_t>(), num_layers, layer_idx, num_q_heads, num_kv_heads,
+      page_size, batch_size); } else { FlashInferBatchDecodeKernel_i4_gqa<128>(
       (__half *)o.data_ptr(), (__half *)q.data_ptr(),
       (void *)kv_data.data_ptr(), (__half2 *)kv_param.data_ptr(),
       kv_indptr.data_ptr<int32_t>(), kv_indicies.data_ptr<int32_t>(),
-      last_page_offset.data_ptr<int32_t>(), num_layers, layer_idx, num_heads,
+      last_page_offset.data_ptr<int32_t>(), num_layers, layer_idx, num_q_heads, num_kv_heads,
       page_size, batch_size); }
 }
 
@@ -357,24 +447,29 @@ void batch_decode_f16(torch::Tensor o, torch::Tensor q, torch::Tensor kv_data,
   CHECK_EQ(kv_param.scalar_type(), at::ScalarType::Half);
 
   int num_layers = static_cast<int>(kv_data.size(1));
-  int num_heads = static_cast<int>(kv_data.size(3));
+  int num_kv_heads = static_cast<int>(kv_data.size(3));
+  int num_q_heads = static_cast<int>(q.size(1));
   int page_size = static_cast<int>(kv_data.size(4));
   int head_dim = static_cast<int>(kv_data.size(5));
   int batch_size = static_cast<int>(o.size(0));
   CHECK_SHAPE(o, q);
+  CHECK_EQ(q.size(2), head_dim);
+  TORCH_CHECK(num_kv_heads > 0 && num_q_heads % num_kv_heads == 0,
+              "num_q_heads must be divisible by num_kv_heads");
+  CHECK_EQ(kv_param.size(3), num_kv_heads);
   CHECK_EQ(kv_indptr.size(0), batch_size + 1);
   CHECK_EQ(last_page_offset.size(0), batch_size);
   TORCH_CHECK(head_dim == 64 || head_dim == 128, "head_dim must be 64 or 128");
-  if (head_dim == 64) { FlashInferBatchDecodeKernel_f16<64>(
+  if (head_dim == 64) { FlashInferBatchDecodeKernel_f16_gqa<64>(
       (__half *)o.data_ptr(), (__half *)q.data_ptr(),
       (void *)kv_data.data_ptr(), (__half2 *)kv_param.data_ptr(),
       kv_indptr.data_ptr<int32_t>(), kv_indicies.data_ptr<int32_t>(),
-      last_page_offset.data_ptr<int32_t>(), num_layers, layer_idx, num_heads,
-      page_size, batch_size); } else { FlashInferBatchDecodeKernel_f16<128>(
+      last_page_offset.data_ptr<int32_t>(), num_layers, layer_idx, num_q_heads, num_kv_heads,
+      page_size, batch_size); } else { FlashInferBatchDecodeKernel_f16_gqa<128>(
       (__half *)o.data_ptr(), (__half *)q.data_ptr(),
       (void *)kv_data.data_ptr(), (__half2 *)kv_param.data_ptr(),
       kv_indptr.data_ptr<int32_t>(), kv_indicies.data_ptr<int32_t>(),
-      last_page_offset.data_ptr<int32_t>(), num_layers, layer_idx, num_heads,
+      last_page_offset.data_ptr<int32_t>(), num_layers, layer_idx, num_q_heads, num_kv_heads,
       page_size, batch_size); }
 }
 
@@ -537,6 +632,17 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m
     m.def("prepack_b", &prepack_b, "Prepack a row-packed INT4 weight", py::arg("B"));
     m.def("matmul_bpre", &matmul_bpre, "INT4 GEMM with prepacked B",
           py::arg("A"), py::arg("BPre"), py::arg("N"), py::arg("K"));
+    m.def("matmul_bpre_grouped_scale", &matmul_bpre_grouped_scale,
+          "INT4 GEMM with per-256 activation scales and prepacked B",
+          py::arg("A"), py::arg("BPre"), py::arg("scale_group"),
+          py::arg("scale_weight"), py::arg("N"), py::arg("K"));
+    m.def("matmul_bpre_multi_scale", &matmul_bpre_multi_scale,
+          "Shared-input two/three-way INT4 projection with fused scaling",
+          py::arg("A"), py::arg("scale_activation"),
+          py::arg("B0"), py::arg("scale_weight0"),
+          py::arg("B1"), py::arg("scale_weight1"),
+          py::arg("B2") = py::none(), py::arg("scale_weight2") = py::none(),
+          py::arg("N0"), py::arg("N1"), py::arg("N2"), py::arg("K"));
 
 
     m.def("sym_quant", &sym_quant,
@@ -574,13 +680,24 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m
     m.def("rms_norm_quant_i4_rows", &rms_norm_quant_i4_rows,
           "Fused row-independent FP16 RMSNorm and signed INT4 quantization");
     m.def("fused_append_kv_i4", &fused_append_kv_i4, "Fused Hadamard, asymmetric INT4 quantization, and paged KV-cache append");
+    m.def("fused_rope_append_kv_i4", &fused_rope_append_kv_i4,
+          "K1: fused Q/K RoPE, K Hadamard, INT4 K/V quantization and paged append");
+    m.def("fused_rmsnorm_quant_i4", &fused_rmsnorm_quant_i4,
+          "Fused RMSNorm and signed INT4 activation quantization",
+          py::arg("input"), py::arg("eps"), py::arg("clip_ratio") = 0.9);
     m.def("fused_attention_hadamard_quant", &fused_attention_hadamard_quant, "Fused attention-output Hadamard and signed INT4 quantization");
     m.def("fused_attention_hadamard_quant_general", &fused_attention_hadamard_quant_general, "Fused general attention-output orthogonal transform and INT4 quantization");
-    m.def("fused_ffn_silu_hadamard_quant", &fused_ffn_silu_hadamard_quant, "Fused SiLU, FFN Hadamard, and signed INT4 quantization");
+    m.def("fused_ffn_silu_hadamard_quant",
+          &fused_ffn_silu_hadamard_quant,
+          "Fused SiLU, full-row FFN Hadamard, and signed INT4 quantization");
+    m.def("fused_ffn_silu_hadamard_quant_grouped256",
+          &fused_ffn_silu_hadamard_quant_grouped256,
+          "Universal per-group-scale grouped-H256 SiLU and INT4 quantization");
     m.def("fused_ffn_silu_hadamard_quant_single_fp16lds",
           &fused_ffn_silu_hadamard_quant_single_fp16lds,
           "Single-kernel FP16-LDS SiLU, generalized transform, and INT4 packing");
-    m.def("fused_ffn_silu_hadamard_quant_general", &fused_ffn_silu_hadamard_quant_general,
+    m.def("fused_ffn_silu_hadamard_quant_general",
+          &fused_ffn_silu_hadamard_quant_general,
           "Fused SiLU, generalized FFN Hadamard, and signed INT4 quantization");
 
 }

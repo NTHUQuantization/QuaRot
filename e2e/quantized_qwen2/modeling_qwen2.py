@@ -40,4 +40,5 @@ class QuarotQwen2ForCausalLM(QuarotCausalLMMixin, Qwen2ForCausalLM):
         super().__init__(config)
         self.cache_dtype = "int4"
         self._init_quarot_model(
-            QuarotQwen2Attention, QuarotQwen2MLP, quarot.nn.RMSNorm)
+            QuarotQwen2Attention, QuarotQwen2MLP,
+            quarot.nn.FusedRMSNormQuant)

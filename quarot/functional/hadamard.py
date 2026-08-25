@@ -4189,3 +4189,35 @@ def get_had172():
          -1, +1, -1, +1, +1, +1, -1, +1, +1, -1, -1, +1, +1, -1, +1, +1, +1, -1, +1, -1, +1, +1, +1, +1, -1, -1, +1, +1,
          -1, -1, -1, +1, ],
     ])
+GROUPED_FFN_HADAMARD_SIZE = 256
+
+
+def grouped_ffn_physical_width(width):
+    """Physical checkpoint width for the universal grouped-H256 FFN."""
+    if not isinstance(width, int) or width <= 0:
+        raise ValueError("FFN width must be a positive integer")
+    group = GROUPED_FFN_HADAMARD_SIZE
+    return ((width + group - 1) // group) * group
+
+
+def matmul_grouped_h256(x):
+    """Apply normalized H256 independently along the padded last dimension."""
+    if x.shape[-1] % GROUPED_FFN_HADAMARD_SIZE:
+        raise ValueError("grouped H256 requires a last dimension divisible by 256")
+    shape = x.shape
+    grouped = x.reshape(*shape[:-1], -1, GROUPED_FFN_HADAMARD_SIZE)
+    if grouped.is_cuda:
+        grouped = fast_hadamard_transform.hadamard_transform(
+            grouped.contiguous(), 1 / 16)
+    else:
+        grouped = grouped.clone()
+        stride = 1
+        while stride < GROUPED_FFN_HADAMARD_SIZE:
+            view = grouped.view(
+                *grouped.shape[:-1],
+                GROUPED_FFN_HADAMARD_SIZE // (2 * stride), 2, stride)
+            low, high = view[..., 0, :].clone(), view[..., 1, :].clone()
+            view[..., 0, :], view[..., 1, :] = low + high, low - high
+            stride <<= 1
+        grouped.mul_(1 / 16)
+    return grouped.reshape(shape)

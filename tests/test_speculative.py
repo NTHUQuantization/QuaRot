@@ -16,7 +16,10 @@ from e2e.speculative import (
     _normalized_hadamard_cpu,
     greedy_accept,
 )
-from quarot.transformers.kv_cache import CacheTransaction
+from quarot.transformers.kv_cache import (
+    CacheTransaction,
+    MultiLayerPagedKVCache4Bit,
+)
 from e2e.pard2 import parser as generation_parser
 from e2e.benchmark_pard2 import parser as benchmark_parser
 from e2e.pard2_calibrate import fit_affine
@@ -218,6 +221,72 @@ def test_transaction_rejects_invalid_commit():
     with pytest.raises(ValueError):
         transaction.commit(6)
     transaction.rollback()
+
+
+def _cpu_paged_cache(*, max_length=256, native_gqa=True, fused_k1=True):
+    return MultiLayerPagedKVCache4Bit(
+        batch_size=1, page_size=128, max_seq_len=max_length,
+        device=torch.device("cpu"), n_layers=1, num_heads=4,
+        num_kv_heads=2, native_gqa=native_gqa,
+        fused_decode_append=True, fused_k1=fused_k1,
+        head_dim=64, disable_quant=False, hadamard_dtype=torch.float16)
+
+
+def test_persistent_metadata_tracks_transaction_commit_and_rollback(
+        monkeypatch):
+    monkeypatch.delenv("QUAROT_PERSISTENT_KV_METADATA", raising=False)
+    cache = _cpu_paged_cache()
+    cache.length = 127
+    transaction = cache.begin()
+    cache.length = 143
+    transaction.proposed_length = 143
+    provisional = cache.get_cache_specs_for_flash_infer(None)
+    assert provisional["last_page_offset"].tolist() == [15]
+    assert provisional["kv_indptr"].tolist() == [0, 2]
+    transaction.commit(6)
+    committed = cache.get_cache_specs_for_flash_infer(None)
+    assert cache.length == 133
+    assert committed["last_page_offset"].tolist() == [5]
+    assert committed["kv_indptr"].tolist() == [0, 2]
+
+    rollback = cache.begin()
+    cache.length = 149
+    rollback.proposed_length = 149
+    rollback.rollback()
+    restored = cache.get_cache_specs_for_flash_infer(None)
+    assert cache.length == 133
+    assert restored["last_page_offset"].tolist() == [5]
+
+
+def test_k1_is_disabled_for_transactions_masks_and_expanded_oracle():
+    cache = _cpu_paged_cache()
+    cache._needs_init[0] = False
+    assert cache.can_fuse_k1(0, None)
+    transaction = cache.begin()
+    assert not cache.can_fuse_k1(0, None)
+    transaction.rollback()
+    assert not cache.can_fuse_k1(0, torch.ones(1, 1))
+
+    expanded = _cpu_paged_cache(native_gqa=False)
+    expanded._needs_init[0] = False
+    assert not expanded.can_fuse_k1(0, None)
+    disabled = _cpu_paged_cache(fused_k1=False)
+    disabled._needs_init[0] = False
+    assert not disabled.can_fuse_k1(0, None)
+
+
+def test_graph_metadata_and_transactions_are_mutually_exclusive(monkeypatch):
+    monkeypatch.delenv("QUAROT_PERSISTENT_KV_METADATA", raising=False)
+    cache = _cpu_paged_cache(max_length=128)
+    cache.length = 5
+    cache.enable_cuda_graph_decode()
+    assert cache.get_cache_specs_for_flash_infer(
+        None)["last_page_offset"].tolist() == [6]
+    cache.advance_cuda_graph_decode()
+    assert cache.get_cache_specs_for_flash_infer(
+        None)["last_page_offset"].tolist() == [7]
+    with pytest.raises(RuntimeError, match="transactions"):
+        cache.begin()
 
 
 class _ToyTarget(torch.nn.Module):

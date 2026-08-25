@@ -194,7 +194,11 @@ def benchmark_model(model, args, tokens):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--int4-model", required=True, help="real converted QuaRot checkpoint")
-    parser.add_argument("--fp16-model", required=True)
+    parser.add_argument("--fp16-model")
+    parser.add_argument(
+        "--int4-only", action="store_true",
+        help="Benchmark and validate only the real INT4 checkpoint; do not "
+             "load the FP16 reference model.")
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--prefill-seq-len", type=int, default=2048)
     parser.add_argument("--decode-steps", type=int, default=128)
@@ -205,6 +209,8 @@ def main():
     parser.add_argument("--correctness-decode", type=int, default=2)
     parser.add_argument("--output", default="benchmark_real_results.json")
     args = parser.parse_args()
+    if not args.int4_only and not args.fp16_model:
+        parser.error("--fp16-model is required unless --int4-only is used")
     if min(args.batch_size, args.prefill_seq_len, args.decode_steps,
            args.iterations, args.repeats) <= 0 or args.warmup < 0:
         parser.error("sizes, iterations, repeats, and decode steps must be positive")
@@ -239,7 +245,9 @@ def main():
     int4.cuda().eval()
     correctness_tokens = deterministic_tokens(args.batch_size, args.correctness_prefill,
                                                int4.config.vocab_size, device)
-    int4_snapshot = numerical_snapshot(int4, correctness_tokens, args.correctness_decode)
+    int4_snapshot = (None if args.int4_only else
+                     numerical_snapshot(
+                         int4, correctness_tokens, args.correctness_decode))
     bench_tokens = deterministic_tokens(args.batch_size, args.prefill_seq_len,
                                          int4.config.vocab_size, device)
     results["int4"] = benchmark_model(int4, args, bench_tokens)
@@ -248,6 +256,11 @@ def main():
     del layers
     del int4
     cleanup()
+
+    if args.int4_only:
+        Path(args.output).write_text(json.dumps(results, indent=2) + "\n")
+        print(json.dumps(results, indent=2))
+        return
 
     fp16 = load_fp16(args.fp16_model).cuda().eval()
     fp16_snapshot = numerical_snapshot(fp16, correctness_tokens, args.correctness_decode)

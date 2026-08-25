@@ -1,6 +1,7 @@
 from transformers.cache_utils import Cache
 from typing import Optional, Tuple, Dict, Any
 import math
+import os
 import torch
 from .. import _HIP
 import functools
@@ -142,7 +143,7 @@ class _AttentionStub(object):
         batch_size, q_len, num_qo_heads, head_dim = q.shape
         q = q.view(batch_size * q_len, num_qo_heads, head_dim)
         if self.hadamard_dtype is not None:
-            q = matmul_had_HIP(q, dtype=self.hadamard_dtype) 
+            q = matmul_had_HIP(q, dtype=self.hadamard_dtype)
         attn_output = torch.empty_like(q)
         if self.disable_quant:
             batch_decode = (batch_decode_f16_gqa if num_qo_heads != num_kv_heads
@@ -151,7 +152,7 @@ class _AttentionStub(object):
             batch_decode = (batch_decode_i4_gqa if num_qo_heads != num_kv_heads
                             else batch_decode_i4)
         batch_decode(
-            attn_output, q, 
+            attn_output, q,
             **attention_kwargs, layer_idx=layer_idx
         )
         attn_output = attn_output.view(batch_size, q_len, num_qo_heads, head_dim)
@@ -196,11 +197,12 @@ class CacheTransaction:
 
 class MultiLayerPagedKVCache4Bit(Cache):
     def __init__(
-        self, batch_size, page_size, max_seq_len, 
+        self, batch_size, page_size, max_seq_len,
         device, n_layers, num_heads, head_dim,
         num_kv_heads=None,
         native_gqa=True,
         fused_decode_append=True,
+        fused_k1=None,
         disable_quant=False, hadamard_dtype=torch.float16 ):
         self.page_size = page_size
         self.n_layers = n_layers
@@ -210,6 +212,9 @@ class MultiLayerPagedKVCache4Bit(Cache):
             raise ValueError("num_attention_heads must be divisible by num_key_value_heads")
         self.native_gqa = bool(native_gqa)
         self.fused_decode_append = bool(fused_decode_append)
+        self.fused_k1 = (
+            os.getenv("QUAROT_FUSED_K1", "1") != "0"
+            if fused_k1 is None else bool(fused_k1))
         # Expanded MHA remains available as a correctness oracle/ablation.
         self.cache_heads = (self.num_kv_heads if self.native_gqa
                             else self.num_q_heads)
@@ -221,15 +226,15 @@ class MultiLayerPagedKVCache4Bit(Cache):
         self.disable_quant = disable_quant
         self.pages = torch.empty(
             (
-                max_page_cnt * batch_size, 
-                n_layers, 
-                2, 
+                max_page_cnt * batch_size,
+                n_layers,
+                2,
                 self.cache_heads,
-                page_size, 
-                head_dim if disable_quant else head_dim // 2 
-            ), 
+                page_size,
+                head_dim if disable_quant else head_dim // 2
+            ),
             dtype=torch.float16 if disable_quant else torch.uint8, device=device)
-        
+
         self.scales = torch.empty((max_page_cnt * batch_size, n_layers, 2, self.cache_heads, page_size, 2), dtype=torch.float16, device=device)
         self.page_size = page_size
         self.max_seq_len = max_seq_len
@@ -238,9 +243,31 @@ class MultiLayerPagedKVCache4Bit(Cache):
         self.device = device
         self.hadamard_dtype = hadamard_dtype
         self._transaction = None
+        # Equal-length decode metadata is immutable except for selecting a
+        # length row. Precomputing it avoids repeated decoder-layer allocation
+        # while rollback remains a logical length change.
+        self._persistent_metadata_enabled = (
+            os.getenv("QUAROT_PERSISTENT_KV_METADATA", "1") != "0")
+        self._cuda_graph_decode = False
+        if self._persistent_metadata_enabled:
+            lengths = torch.arange(
+                max_seq_len + 1, device=device, dtype=torch.int32)
+            page_counts = torch.div(
+                lengths + page_size - 1, page_size, rounding_mode="floor")
+            batch_offsets = torch.arange(
+                batch_size + 1, device=device, dtype=torch.int32)
+            self._decode_kv_indptr = (
+                page_counts[:, None] * batch_offsets[None, :])
+            self._decode_kv_indices = torch.arange(
+                max_page_cnt * batch_size, device=device, dtype=torch.int32)
+            page_offsets = lengths.remainder(page_size)
+            page_offsets = torch.where(
+                (lengths != 0) & (page_offsets == 0), page_size, page_offsets)
+            self._decode_last_page_offset = page_offsets[:, None].repeat(
+                1, batch_size)
         self._stub = _AttentionStub(
-            self.page_size, device, n_layers, 
-            disable_quant=self.disable_quant, 
+            self.page_size, device, n_layers,
+            disable_quant=self.disable_quant,
             hadamard_dtype=self.hadamard_dtype)
 
     def page_cnt_from_length(self, length):
@@ -249,7 +276,7 @@ class MultiLayerPagedKVCache4Bit(Cache):
     @property
     def batch_size(self):
         return self._batch_size
-    
+
     def _ensure_page_cnt_per_batch(self, expected_page_cnt_per_batch):
         expected_page_cnt = expected_page_cnt_per_batch * self.batch_size
         if expected_page_cnt <= self.pages.shape[0]:
@@ -261,8 +288,11 @@ class MultiLayerPagedKVCache4Bit(Cache):
         return self.length
 
     def begin(self):
+        if self._cuda_graph_decode:
+            raise RuntimeError(
+                "cache transactions cannot use graph decode metadata")
         return CacheTransaction(self)
-        
+
     def update(
         self,
         key_states: torch.Tensor,
@@ -270,7 +300,8 @@ class MultiLayerPagedKVCache4Bit(Cache):
         layer_idx: int,
         cache_kwargs: Optional[Dict[str, Any]] = None,
     ):
-        
+        cache_kwargs = cache_kwargs or {}
+
         b_sz, added_length, num_heads, head_dim = key_states.shape
         if num_heads != self.num_kv_heads:
             raise ValueError("KV tensor head count does not match cache configuration")
@@ -325,6 +356,8 @@ class MultiLayerPagedKVCache4Bit(Cache):
         if layer_idx == 0:
             current_length = self.length
             new_length = current_length + added_length
+            if new_length > self.max_seq_len:
+                raise ValueError("KV cache capacity exceeded")
             self._ensure_page_cnt_per_batch(self.page_cnt_from_length(new_length))
             self.length = new_length
             if self._transaction is not None:
@@ -360,9 +393,9 @@ class MultiLayerPagedKVCache4Bit(Cache):
             init_kv = init_kv_f16 if self.disable_quant else init_kv_i4
             init_kv(
                 **self.get_cache_specs_for_flash_infer(attention_mask),
-                k=key_states.view(-1, num_heads, quantized_head_dim), 
-                v=value_states.view(-1, num_heads, quantized_head_dim), 
-                k_param=k_param.view(-1, num_heads, 2), 
+                k=key_states.view(-1, num_heads, quantized_head_dim),
+                v=value_states.view(-1, num_heads, quantized_head_dim),
+                k_param=k_param.view(-1, num_heads, 2),
                 v_param=v_param.view(-1, num_heads, 2),
                 seqlen_indptr=seqlens_in_batch,
                 layer_idx=layer_idx
@@ -415,6 +448,46 @@ class MultiLayerPagedKVCache4Bit(Cache):
             layer_idx=layer_idx,
         )
 
+    def can_fuse_k1(self, layer_idx, attention_mask):
+        """Whether the incoming AR-only RoPE/KV append kernel is safe."""
+        return (
+            self.fused_k1 and self.fused_decode_append and self.native_gqa
+            and attention_mask is None and not self.disable_quant
+            and self._transaction is None
+            and not self._needs_init[layer_idx])
+
+    def update_fused_k1(
+            self, query_states, key_states, value_states, cos, sin, layer_idx):
+        """Decode-only Q/K RoPE plus direct native-GQA KV4 append."""
+        batch, added_length, kv_heads, head_dim = key_states.shape
+        query_heads = query_states.shape[2]
+        if (added_length != 1 or batch != self.batch_size
+                or kv_heads != self.num_kv_heads
+                or query_heads != self.num_q_heads
+                or not self.can_fuse_k1(layer_idx, None)):
+            raise ValueError(
+                "K1 requires one non-transactional native-GQA decode token")
+        if layer_idx == 0:
+            new_length = self.length + 1
+            if new_length > self.max_seq_len:
+                raise ValueError("KV cache capacity exceeded")
+            self._ensure_page_cnt_per_batch(
+                self.page_cnt_from_length(new_length))
+            self.length = new_length
+            if self._transaction is not None:
+                self._transaction.proposed_length = new_length
+        specs = self.get_cache_specs_for_flash_infer(None)
+        query_out = _HIP.fused_rope_append_kv_i4(
+            query_states.contiguous(), key_states.contiguous(),
+            value_states.contiguous(), cos.contiguous(), sin.contiguous(),
+            specs["kv_data"], specs["kv_param"], specs["kv_indptr"],
+            specs["kv_indices"], specs["last_page_offset"],
+            self.n_layers, layer_idx, self.page_size)
+        attention = functools.partial(
+            self._stub.forward, num_kv_heads=kv_heads,
+            attention_kwargs=specs, layer_idx=layer_idx)
+        return query_out, attention
+
     def get_virtual_cache_specs(self, chunk_length):
         """Build causal paged metadata for B*chunk independent decode rows."""
         if chunk_length < 1:
@@ -443,8 +516,22 @@ class MultiLayerPagedKVCache4Bit(Cache):
                                              dtype=torch.int32),
             "kv_param": self.scales,
         }
-    
+
     def get_cache_specs_for_flash_infer(self, attention_mask):
+        if attention_mask is None and self._cuda_graph_decode:
+            return self._cuda_graph_specs
+        if attention_mask is None and self._persistent_metadata_enabled:
+            if self.length > self.max_seq_len:
+                raise ValueError("cache length exceeds preallocated metadata")
+            page_cnt = self.page_cnt_from_length(self.length)
+            return {
+                "kv_data": self.pages,
+                "kv_indptr": self._decode_kv_indptr[self.length],
+                "kv_indices": self._decode_kv_indices[
+                    :page_cnt * self.batch_size],
+                "last_page_offset": self._decode_last_page_offset[self.length],
+                "kv_param": self.scales,
+            }
         if attention_mask is not None:
             seqlens_in_batch = attention_mask.sum(dim=-1, dtype=torch.int32)
         else:
@@ -457,13 +544,40 @@ class MultiLayerPagedKVCache4Bit(Cache):
         page_ptr = torch.where((seqlens_in_batch != 0) & (page_ptr == 0), self.page_size, page_ptr)
         return {
             f"kv_data": self.pages,
-            f"kv_indptr": torch.arange(0, self.batch_size + 1, device=self.device, dtype=torch.int) * page_cnt, 
+            f"kv_indptr": torch.arange(0, self.batch_size + 1, device=self.device, dtype=torch.int) * page_cnt,
             f"kv_indices": (
-                (torch.arange(page_cnt, device=self.device, dtype=torch.int) * self.batch_size).unsqueeze(0) + 
-                torch.arange(self.batch_size, device=self.device, dtype=torch.int).unsqueeze(1)).view(-1), 
+                (torch.arange(page_cnt, device=self.device, dtype=torch.int) * self.batch_size).unsqueeze(0) +
+                torch.arange(self.batch_size, device=self.device, dtype=torch.int).unsqueeze(1)).view(-1),
             f"last_page_offset": page_ptr, #torch.full((self.batch_size, ), page_ptr, device=self.device, dtype=torch.int),
-            f"kv_param": self.scales, 
+            f"kv_param": self.scales,
         }
+
+    def enable_cuda_graph_decode(self):
+        """Freeze single-page decode metadata addresses for graph replay."""
+        if not self._persistent_metadata_enabled:
+            raise RuntimeError("graph decode requires persistent KV metadata")
+        if self._transaction is not None:
+            raise RuntimeError("graph decode cannot start during a transaction")
+        if self.page_cnt_from_length(self.max_seq_len) != 1:
+            raise NotImplementedError(
+                "graph decode currently requires a single cache page")
+        next_length = self.length + 1
+        if next_length > self.max_seq_len:
+            raise ValueError("cache is already at capacity")
+        self._cuda_graph_specs = {
+            "kv_data": self.pages,
+            "kv_indptr": self._decode_kv_indptr[next_length].clone(),
+            "kv_indices": self._decode_kv_indices[:self.batch_size],
+            "last_page_offset": self._decode_last_page_offset[
+                next_length].clone(),
+            "kv_param": self.scales,
+        }
+        self._cuda_graph_decode = True
+
+    def advance_cuda_graph_decode(self):
+        if not self._cuda_graph_decode:
+            raise RuntimeError("CUDA graph decode metadata is not enabled")
+        self._cuda_graph_specs["last_page_offset"].add_(1)
 
     def get_seq_length(self, layer_idx: Optional[int] = 0) -> int:
         """Returns the sequence length of the cached states. A layer index can be optionally passed."""

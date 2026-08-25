@@ -1,5 +1,6 @@
 """Accuracy regression benchmark for dense QuaRot Llama/Qwen checkpoints."""
 import argparse
+import gc
 import json
 import math
 import sys
@@ -56,7 +57,7 @@ def perplexity(model, input_ids, chunk):
     return math.exp(total_nll / total_tokens)
 
 @torch.inference_mode()
-def dataset_metrics(actual_model, reference_model, input_ids, chunk):
+def dataset_metrics(actual_model, reference_model, input_ids, chunk, expected_chunks=None):
     totals = {
         "positions": 0, "logits": 0,
         "actual_nll": 0.0, "reference_nll": 0.0,
@@ -71,7 +72,10 @@ def dataset_metrics(actual_model, reference_model, input_ids, chunk):
         window = input_ids[:, start:stop + 1]
         labels = window[:, 1:]
         actual = actual_model(window, use_cache=False).logits[:, :-1].float()
-        expected = reference_model(window, use_cache=False).logits[:, :-1].float()
+        if expected_chunks is None:
+            expected = reference_model(window, use_cache=False).logits[:, :-1].float()
+        else:
+            expected = expected_chunks[chunks].to(actual.device)
         flat_actual = actual.reshape(-1, actual.shape[-1])
         flat_expected = expected.reshape(-1, expected.shape[-1])
         flat_labels = labels.reshape(-1)
@@ -133,10 +137,58 @@ def load_int4(path):
     return int4_cls.from_pretrained(
         path, config=config, torch_dtype=torch.float16, local_files_only=True)
 
-def load_reference(path):
+def load_reference(path, *, device_map=None, max_memory=None,
+                   offload_folder=None, offload_state_dict=True):
+    if device_map is not None:
+        # The QuaRot FP16 wrapper always calls FlashAttention, which cannot
+        # execute layers assigned to CPU. The standard dense model with SDPA
+        # is numerically equivalent and supports mixed GPU/CPU/disk dispatch.
+        return transformers.AutoModelForCausalLM.from_pretrained(
+            path, torch_dtype=torch.float16, attn_implementation="sdpa",
+            device_map=device_map, max_memory=max_memory,
+            offload_folder=offload_folder,
+            offload_state_dict=offload_state_dict,
+            low_cpu_mem_usage=True)
     _, _, fp16_cls = runtime_types(path)
     return fp16_cls.from_pretrained(
-        path, torch_dtype=torch.float16, attn_implementation="flash_attention_2")
+        path, torch_dtype=torch.float16,
+        attn_implementation="flash_attention_2")
+
+
+def cleanup():
+    gc.collect()
+    torch.cuda.empty_cache()
+
+
+def model_input_device(model):
+    return model.get_input_embeddings().weight.device
+
+
+@torch.inference_mode()
+def snapshot_no_cache(model, input_ids, decode_steps):
+    sequence = input_ids
+    result = []
+    for step in range(decode_steps + 1):
+        output = model(sequence, use_cache=False)
+        result.append(output.logits[:, -1].float().cpu())
+        if step != decode_steps:
+            next_token = torch.full(
+                (sequence.shape[0], 1), 100, dtype=torch.long,
+                device=sequence.device)
+            sequence = torch.cat((sequence, next_token), dim=1)
+        del output
+    return result
+
+
+@torch.inference_mode()
+def collect_dataset_logits(model, input_ids, chunk):
+    result = []
+    device = model_input_device(model)
+    for start in range(0, input_ids.shape[1] - 1, chunk):
+        stop = min(start + chunk, input_ids.shape[1] - 1)
+        window = input_ids[:, start:stop + 1].to(device)
+        result.append(model(window, use_cache=False).logits[:, :-1].float().cpu())
+    return result
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -155,25 +207,74 @@ def main():
     parser.add_argument("--ppl-chunk", type=int, default=128)
     parser.add_argument("--output", type=Path,
                         default=Path("accuracy_results.json"))
+    parser.add_argument(
+        "--sequential-low-vram", action="store_true",
+        help="Run an offloaded FP16 reference pass first, unload it, then run "
+             "INT4 so both models are never resident on the GPU together.")
+    parser.add_argument("--reference-max-gpu-memory", default="16GiB")
+    parser.add_argument("--reference-max-cpu-memory", default="40GiB")
+    parser.add_argument(
+        "--offload-folder", type=Path,
+        default=Path("/tmp/quarot-reference-offload"))
+    parser.add_argument(
+        "--reference-disk-offload", action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Allow reference weights/state to spill to --offload-folder "
+             "(default: enabled). Disable only when GPU+CPU budgets cover "
+             "the complete reference checkpoint.")
     args = parser.parse_args()
     if args.ppl_tokens < 2 or args.ppl_chunk < 1:
         parser.error("--ppl-tokens must be at least 2 and --ppl-chunk positive")
     device = torch.device("cuda")
-    int4 = load_int4(args.int4_model).cuda().eval()
-    reference = load_reference(args.reference_model).cuda().eval()
-    input_ids = tokens(args.batch_size, args.prefill,
-                       int4.config.vocab_size, device)
-    actual, expected = snapshot(int4, input_ids, args.decode_steps), snapshot(
-        reference, input_ids, args.decode_steps)
     evaluation = get_loaders(
         args.dataset, seed=0,
         model=args.tokenizer_model or args.reference_model,
         seqlen=args.ppl_chunk, hf_token=args.hf_token, eval_mode=True)
-    ppl_ids = evaluation.input_ids[:, :args.ppl_tokens].to(device)
-    dataset_evaluation = dataset_metrics(
-        int4, reference, ppl_ids, args.ppl_chunk)
+    ppl_ids_cpu = evaluation.input_ids[:, :args.ppl_tokens].cpu()
+
+    if args.sequential_low_vram:
+        args.offload_folder.mkdir(parents=True, exist_ok=True)
+        reference = load_reference(
+            args.reference_model, device_map="auto",
+            max_memory={
+                0: args.reference_max_gpu_memory,
+                "cpu": args.reference_max_cpu_memory,
+            },
+            offload_folder=(str(args.offload_folder)
+                            if args.reference_disk_offload else None),
+            offload_state_dict=args.reference_disk_offload).eval()
+        reference_device = model_input_device(reference)
+        reference_ids = tokens(
+            args.batch_size, args.prefill,
+            reference.config.vocab_size, reference_device)
+        expected = snapshot_no_cache(
+            reference, reference_ids, args.decode_steps)
+        expected_chunks = collect_dataset_logits(
+            reference, ppl_ids_cpu, args.ppl_chunk)
+        del reference, reference_ids
+        cleanup()
+
+        int4 = load_int4(args.int4_model).cuda().eval()
+        input_ids = tokens(
+            args.batch_size, args.prefill, int4.config.vocab_size, device)
+        actual = snapshot_no_cache(int4, input_ids, args.decode_steps)
+        dataset_evaluation = dataset_metrics(
+            int4, None, ppl_ids_cpu.to(device), args.ppl_chunk,
+            expected_chunks=expected_chunks)
+    else:
+        int4 = load_int4(args.int4_model).cuda().eval()
+        reference = load_reference(args.reference_model).cuda().eval()
+        input_ids = tokens(args.batch_size, args.prefill,
+                           int4.config.vocab_size, device)
+        actual = snapshot(int4, input_ids, args.decode_steps)
+        expected = snapshot(reference, input_ids, args.decode_steps)
+        dataset_evaluation = dataset_metrics(
+            int4, reference, ppl_ids_cpu.to(device), args.ppl_chunk)
     result = {
-        "configuration": vars(args) | {"output": str(args.output)},
+        "configuration": vars(args) | {
+            "output": str(args.output),
+            "offload_folder": str(args.offload_folder),
+        },
         "model_type": int4.config.model_type,
         "logit_comparison": [
             {"phase": "prefill" if i == 0 else f"decode_{i}",

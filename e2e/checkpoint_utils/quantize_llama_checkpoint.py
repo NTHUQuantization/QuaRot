@@ -11,6 +11,11 @@ if __package__ in (None, ""):
 
 from e2e.quantized_llama import modeling_llama
 from e2e.checkpoint_utils import data_utils, gptq_utils, rotation_utils
+from e2e.checkpoint_utils.quantize_checkpoint import (
+    QUAROT_ACTIVATION_CLIP_RATIO,
+    QUAROT_CHECKPOINT_FORMAT_VERSION,
+    QUAROT_FFN_FORMAT,
+)
 from quarot.functional import pack_i4
 
 def main(args):
@@ -43,19 +48,19 @@ def main(args):
 
     old_dict = model.state_dict()
     key_maps = {
-        "mlp.down_proj": "mlp.down_proj.2",
         "self_attn.o_proj": "self_attn.o_proj.1"
     }
     bad_key_names = {
         "post_attention_layernorm.weight",
-        "input_layernorm.weight"
+        "input_layernorm.weight",
+        "model.norm.weight",
     }
     def _get_new_key(key):
         new_key = key
         for old_name, new_name in key_maps.items():
             new_key = new_key.replace(old_name, new_name)
         return new_key
-    
+
     def _keep_key(key):
         return all(bad_name not in key for bad_name in bad_key_names)
 
@@ -72,8 +77,11 @@ def main(args):
         args.pretraiend_path_or_name,
         attn_implementation="flash_attention_2"
     )
+    config.quarot_checkpoint_format_version = QUAROT_CHECKPOINT_FORMAT_VERSION
+    config.quarot_ffn_format = QUAROT_FFN_FORMAT
+    config.quarot_activation_clip_ratio = QUAROT_ACTIVATION_CLIP_RATIO
     torch.set_default_dtype(torch.float16)
-    with transformers.modeling_utils.no_init_weights(): 
+    with transformers.modeling_utils.no_init_weights():
         new_model = modeling_llama.QuarotLlamaForCausalLM(config=config)
 
     result = new_model.load_state_dict(new_dict, strict=False)
@@ -86,14 +94,24 @@ def main(args):
     with open(f"{args.save_path}/config.json") as f:
         config = json.load(f)
     config["auto_map"] = {
-        "AutoConfig": "quarot.LlamaConfig",
+        "AutoConfig": "quarot.QuarotLlamaConfig",
         "AutoModelForCausalLM": "quarot.QuarotLlamaForCausalLM"
     }
-    config["model_type"] =  "llama_quarot"
+    config["model_type"] = "llama_quarot"
+    config["tokenizer_name_or_path"] = args.pretraiend_path_or_name
     with open(f"{args.save_path}/config.json", "w") as f:
-        json.dump(config, f)
-    
-    shutil.copy("e2e/quantized_llama/modeling_llama.py", f"{args.save_path}/quarot.py")
+        json.dump(config, f, indent=2)
+        f.write("\n")
+
+    transformers.AutoTokenizer.from_pretrained(
+        args.pretraiend_path_or_name).save_pretrained(args.save_path)
+    runtime_root = Path(__file__).parents[1]
+    shutil.copy(
+        runtime_root / "quantized_llama" / "modeling_llama.py",
+        Path(args.save_path) / "quarot.py")
+    shutil.copy(
+        runtime_root / "quantized_common.py",
+        Path(args.save_path) / "quantized_common.py")
 
 
 if __name__ == "__main__":
@@ -114,16 +132,16 @@ if __name__ == "__main__":
     parser.add_argument('--seed', type=int, default=0, help='Random Seed for HuggingFace and PyTorch')
     parser.add_argument('--eval_dataset', type=str, default='wikitext2',
                         help='Dataset for Evaluation (default: wikitext2)', choices=supported_datasets,)
-    
 
-    parser.add_argument('--w_groupsize', type=int, default=-1, 
+
+    parser.add_argument('--w_groupsize', type=int, default=-1,
                         help='Groupsize for weight quantization. Note that this should be the same as a_groupsize')
     parser.add_argument('--w_asym', action=argparse.BooleanOptionalAction, default=False,
                         help='ASymmetric weight quantization (default: False)')
     parser.add_argument('--w_rtn', action=argparse.BooleanOptionalAction, default=False,
                         help='Quantize the weights using RtN. If the w_bits < 16 and this flag is not set, we use GPTQ')
     parser.add_argument('--w_clip', action=argparse.BooleanOptionalAction, default=True,
-                        help='''Clipping the weight quantization! 
+                        help='''Clipping the weight quantization!
                         We do not support arguments for clipping and we find the best clip ratio during the weight quantization''')
     parser.add_argument('--nsamples', type=int, default=128,
                         help='Number of calibration data samples for GPTQ.')

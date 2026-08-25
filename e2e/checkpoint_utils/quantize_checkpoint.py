@@ -1,4 +1,4 @@
-"""Convert a dense Llama, Qwen2.5, or Qwen3 checkpoint to QuaRot INT4."""
+"""Convert dense Llama 2/3.1, CodeLlama, Qwen2.5, or Qwen3 to QuaRot INT4."""
 import argparse
 import json
 import shutil
@@ -9,8 +9,11 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import transformers
-from e2e.checkpoint_utils import data_utils, gptq_utils, rotation_utils
-from quarot.functional import pack_i4
+from e2e.checkpoint_utils import streaming_gptq, streaming_rtn
+
+QUAROT_CHECKPOINT_FORMAT_VERSION = 2
+QUAROT_FFN_FORMAT = "grouped_h256_v1"
+QUAROT_ACTIVATION_CLIP_RATIO = 0.9
 
 FAMILIES = {
     "llama": ("e2e.quantized_llama.modeling_llama", "QuarotLlamaConfig",
@@ -29,75 +32,47 @@ def runtime_types(model_type):
     return getattr(module, config_name), getattr(module, model_name), output_type, module
 
 def main(args):
+    # A resumed run must recreate the rotation used by its cached layers.
+    torch.manual_seed(args.seed)
     config = transformers.AutoConfig.from_pretrained(args.model)
     if getattr(config, "num_experts", 0):
         raise ValueError("MoE checkpoints are intentionally not supported")
     config_cls, runtime_cls, output_type, runtime_module = runtime_types(config.model_type)
-    model = transformers.AutoModelForCausalLM.from_pretrained(
-        args.model, torch_dtype=torch.float16)
-    model.seqlen = args.seqlen
-    device = torch.device("cuda:0")
-    rotation_device = device if args.rotation_device == "cuda" else torch.device("cpu")
-    rotation_dtype = {
-        "float32": torch.float32,
-        "float64": torch.float64,
-    }[args.rotation_dtype]
-    print(f"Offline fusion/rotation: device={rotation_device}, "
-          f"dtype={rotation_dtype}", flush=True)
-    final_norm_weight = model.model.norm.weight.detach().cpu().float().clone()
-    rotation_utils.fuse_layer_norms(
-        model, device=rotation_device, dtype=rotation_dtype)
-    rotation_signs = rotation_utils.rotate_model(
-        model, device=rotation_device, dtype=rotation_dtype)
-    if args.w_rtn:
-        quantizers = gptq_utils.rtn_fwrd(model, device, args)
+    if args.quant_method == "rtn":
+        print(f"Streaming RtN: source={args.model}, output={args.output}, "
+              f"rotation_device={args.rotation_device}, "
+              f"rotation_dtype={args.rotation_dtype}", flush=True)
+        streaming_rtn.convert(args.model, args.output, config, args)
     else:
-        loader = data_utils.get_loaders(
-            args.cal_dataset, nsamples=args.nsamples, seed=args.seed,
-            model=args.tokenizer_model or args.model,
-            seqlen=model.seqlen, eval_mode=False)
-        quantizers = gptq_utils.gptq_fwrd(model, loader, device, args)
+        print(f"Streaming GPTQ: source={args.model}, output={args.output}, "
+              f"rotation_device={args.rotation_device}, "
+              f"rotation_dtype={args.rotation_dtype}", flush=True)
+        streaming_gptq.convert(args.model, args.output, config, args)
 
-    key_maps = {"mlp.down_proj": "mlp.down_proj.2",
-                "self_attn.o_proj": "self_attn.o_proj.1"}
-    def remap(key):
-        for old, new in key_maps.items():
-            key = key.replace(old, new)
-        return key
-    removed_norms = ("post_attention_layernorm.weight",
-                     "input_layernorm.weight", "model.norm.weight")
-    state = {remap(k): v for k, v in model.state_dict().items()
-             if not any(name in k for name in removed_norms)}
-    for key, quantizer in quantizers.items():
-        key = remap(key)
-        scale = quantizer.scale
-        state[f"{key}.weight_scales"] = scale
-        state[f"{key}.weight"] = pack_i4(
-            (state[f"{key}.weight"] / scale).round().to(torch.int8))
+    finalize_output(args.output, args.model, config_cls, runtime_cls,
+                    output_type, runtime_module)
 
+
+def finalize_output(output_path, model, config_cls, runtime_cls, output_type,
+                    runtime_module):
+    output = Path(output_path)
     runtime_config = config_cls.from_pretrained(
-        args.model, attn_implementation="flash_attention_2")
-    runtime_config.quarot_rotation_signs = rotation_signs.tolist()
-    runtime_config.quarot_final_norm_weight = final_norm_weight.tolist()
-    old_dtype = torch.get_default_dtype()
-    torch.set_default_dtype(torch.float16)
-    with transformers.modeling_utils.no_init_weights():
-        converted = runtime_cls(runtime_config)
-    torch.set_default_dtype(old_dtype)
-    result = converted.load_state_dict(state, strict=False)
-    unexpected_missing = [k for k in result.missing_keys if "had_rem_dim" not in k]
-    if unexpected_missing or result.unexpected_keys:
-        raise RuntimeError(f"checkpoint mapping failed: {result}")
-    converted.cpu().save_pretrained(args.output)
-
-    output = Path(args.output)
+        model, attn_implementation="flash_attention_2")
+    runtime_config.save_pretrained(output)
     config_path = output / "config.json"
     saved_config = json.loads(config_path.read_text())
     saved_config["auto_map"] = {
         "AutoConfig": f"quarot.{config_cls.__name__}",
         "AutoModelForCausalLM": f"quarot.{runtime_cls.__name__}"}
     saved_config["model_type"] = output_type
+    saved_config["tokenizer_name_or_path"] = model
+    saved_config["quarot_checkpoint_format_version"] = (
+        QUAROT_CHECKPOINT_FORMAT_VERSION)
+    saved_config["quarot_ffn_format"] = QUAROT_FFN_FORMAT
+    saved_config["quarot_activation_clip_ratio"] = (
+        QUAROT_ACTIVATION_CLIP_RATIO)
     config_path.write_text(json.dumps(saved_config, indent=2) + "\n")
+    transformers.AutoTokenizer.from_pretrained(model).save_pretrained(output)
     source = Path(runtime_module.__file__)
     shutil.copy(source, output / "quarot.py")
     shutil.copy(Path(__file__).parents[1] / "quantized_common.py",
@@ -116,7 +91,10 @@ if __name__ == "__main__":
         "--tokenizer-model",
         help="Optional tokenizer ID/path for calibration when --model uses a "
              "gated or unavailable tokenizer.")
-    parser.add_argument("--w-rtn", action="store_true")
+    parser.add_argument(
+        "--quant-method", choices=("rtn", "gptq"), default="rtn",
+        help="Weight quantization method (default: rtn). Both methods stream "
+             "the checkpoint one layer at a time.")
     parser.add_argument("--w-groupsize", type=int, default=-1)
     parser.add_argument("--w-asym", action="store_true")
     parser.add_argument(

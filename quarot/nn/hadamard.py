@@ -8,12 +8,14 @@ class OnlineHadamard(torch.nn.Module):
         self.fp32_had = force_fp32
         had_rem_dim, self.rem_dim = quarot.functional.hadamard.get_hadK(hadamard_dim)
         if had_rem_dim is not None:
-            self.register_buffer("had_rem_dim", had_rem_dim)
+            # This matrix is deterministically reconstructed from hadamard_dim.
+            # Do not serialize it or report it as a missing checkpoint weight.
+            self.register_buffer("had_rem_dim", had_rem_dim, persistent=False)
             if not self.fp32_had:
                 self.had_rem_dim = self.had_rem_dim.to(torch.float16)
         else:
-            self.had_rem_dim = None       
-    
+            self.had_rem_dim = None
+
     def forward(self, x):
         x_dtype = x.dtype
         if self.fp32_had:
