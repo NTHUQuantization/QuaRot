@@ -243,6 +243,9 @@ def main():
     bench_tokens = deterministic_tokens(args.batch_size, args.prefill_seq_len,
                                          int4.config.vocab_size, device)
     results["int4"] = benchmark_model(int4, args, bench_tokens)
+    # ``layers`` retains every decoder module even after deleting the model.
+    # Release it before loading the FP16 baseline or both 8B models coexist.
+    del layers
     del int4
     cleanup()
 

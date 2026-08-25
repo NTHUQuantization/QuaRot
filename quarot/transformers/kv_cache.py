@@ -29,8 +29,15 @@ def unpack_i4_and_asym_dequantize(q, scale, zero):
 
 def matmul_had_HIP(X, dtype):
     n = X.shape[-1]
-    input = hadamard_transform(X.to(dtype).contiguous(), scale=1/math.sqrt(n))
-    return input.to(X.dtype).view(X.shape) 
+    # Flatten explicitly so every KV head/token is an independent FHT row.
+    # The HIP backend otherwise mixes chunk row 1+ across leading axes.
+    rows = X.to(dtype).contiguous().view(-1, n)
+    # gfx1201 hadacore is exact for at most eight rows per dispatch.
+    output = torch.cat([
+        hadamard_transform(rows[start:start + 8], scale=1/math.sqrt(n))
+        for start in range(0, rows.shape[0], 8)
+    ], dim=0)
+    return output.to(X.dtype).view(X.shape)
 
 
 def init_kv_i4(kv_data, kv_param,
@@ -77,6 +84,12 @@ def batch_decode_i4(o, q, kv_data, kv_param,
         kv_indptr, kv_indices,
         last_page_offset, layer_idx)
 
+def batch_decode_i4_gqa(o, q, kv_data, kv_param,
+               kv_indptr, kv_indices, last_page_offset, layer_idx):
+    return _HIP.batch_decode_i4_gqa(
+        o, q, kv_data, kv_param, kv_indptr, kv_indices,
+        last_page_offset, layer_idx)
+
 
 def init_kv_f16(kv_data, kv_param,
                kv_indptr, kv_indices,
@@ -111,6 +124,12 @@ def batch_decode_f16(o, q, kv_data, kv_param,
         kv_indptr, kv_indices,
         last_page_offset, layer_idx)
 
+def batch_decode_f16_gqa(o, q, kv_data, kv_param,
+               kv_indptr, kv_indices, last_page_offset, layer_idx):
+    return _HIP.batch_decode_f16_gqa(
+        o, q, kv_data, kv_param, kv_indptr, kv_indices,
+        last_page_offset, layer_idx)
+
 
 class _AttentionStub(object):
     def __init__(self, cache_page_size, device, n_layers, disable_quant, hadamard_dtype):
@@ -121,21 +140,58 @@ class _AttentionStub(object):
 
     def forward(self, q, num_kv_heads, attention_kwargs, layer_idx):
         batch_size, q_len, num_qo_heads, head_dim = q.shape
-        assert q_len == 1
-        q = q.view(batch_size, num_qo_heads, head_dim)
+        q = q.view(batch_size * q_len, num_qo_heads, head_dim)
         if self.hadamard_dtype is not None:
             q = matmul_had_HIP(q, dtype=self.hadamard_dtype) 
         attn_output = torch.empty_like(q)
         if self.disable_quant:
-            batch_decode = batch_decode_f16
+            batch_decode = (batch_decode_f16_gqa if num_qo_heads != num_kv_heads
+                            else batch_decode_f16)
         else:
-            batch_decode = batch_decode_i4
+            batch_decode = (batch_decode_i4_gqa if num_qo_heads != num_kv_heads
+                            else batch_decode_i4)
         batch_decode(
             attn_output, q, 
             **attention_kwargs, layer_idx=layer_idx
         )
-        attn_output = attn_output.unsqueeze(1)
+        attn_output = attn_output.view(batch_size, q_len, num_qo_heads, head_dim)
         return attn_output
+
+
+class CacheTransaction:
+    """Logical KV transaction; stale provisional slots are overwritten later."""
+
+    def __init__(self, cache):
+        if cache._transaction is not None:
+            raise RuntimeError("a cache transaction is already active")
+        self.cache = cache
+        self.start_length = cache.length
+        self.proposed_length = self.start_length
+        self.closed = False
+        cache._transaction = self
+
+    @property
+    def proposed_tokens(self):
+        return self.proposed_length - self.start_length
+
+    def commit(self, keep_tokens):
+        if self.closed:
+            raise RuntimeError("cache transaction is already closed")
+        if not 0 <= keep_tokens <= self.proposed_tokens:
+            raise ValueError(
+                f"keep_tokens must be in [0, {self.proposed_tokens}]")
+        self.cache.length = self.start_length + keep_tokens
+        self.cache._transaction = None
+        self.closed = True
+
+    def rollback(self):
+        self.commit(0)
+
+    def __del__(self):
+        if not self.closed:
+            self.cache.length = self.start_length
+            self.cache._transaction = None
+            self.closed = True
 
 
 class MultiLayerPagedKVCache4Bit(Cache):
@@ -143,6 +199,8 @@ class MultiLayerPagedKVCache4Bit(Cache):
         self, batch_size, page_size, max_seq_len, 
         device, n_layers, num_heads, head_dim,
         num_kv_heads=None,
+        native_gqa=True,
+        fused_decode_append=True,
         disable_quant=False, hadamard_dtype=torch.float16 ):
         self.page_size = page_size
         self.n_layers = n_layers
@@ -150,10 +208,11 @@ class MultiLayerPagedKVCache4Bit(Cache):
         self.num_kv_heads = num_heads if num_kv_heads is None else num_kv_heads
         if self.num_q_heads % self.num_kv_heads != 0:
             raise ValueError("num_attention_heads must be divisible by num_key_value_heads")
-        # FlashInfer in this target only has an MHA decode kernel.  Expand KV
-        # heads once on cache write for correct GQA mapping; this is retained as
-        # a compatibility fallback until a native GQA decode kernel is added.
-        self.cache_heads = self.num_q_heads
+        self.native_gqa = bool(native_gqa)
+        self.fused_decode_append = bool(fused_decode_append)
+        # Expanded MHA remains available as a correctness oracle/ablation.
+        self.cache_heads = (self.num_kv_heads if self.native_gqa
+                            else self.num_q_heads)
         # transformers.Cache exposes ``batch_size`` as a read-only property.
         # Store the value privately and expose it below so this cache keeps the
         # same public API without assigning to the base-class descriptor.
@@ -178,6 +237,7 @@ class MultiLayerPagedKVCache4Bit(Cache):
         self.length = 0
         self.device = device
         self.hadamard_dtype = hadamard_dtype
+        self._transaction = None
         self._stub = _AttentionStub(
             self.page_size, device, n_layers, 
             disable_quant=self.disable_quant, 
@@ -199,6 +259,9 @@ class MultiLayerPagedKVCache4Bit(Cache):
     @property
     def seen_tokens(self):
         return self.length
+
+    def begin(self):
+        return CacheTransaction(self)
         
     def update(
         self,
@@ -216,15 +279,10 @@ class MultiLayerPagedKVCache4Bit(Cache):
         orig_value_states = value_states
 
         use_fused_append = (
-            not self.disable_quant and not self._needs_init[layer_idx] and added_length == 1
+            self.fused_decode_append and not self.disable_quant and
+            cache_kwargs.get("attention_mask") is None
         )
 
-        # Keep prefill in the model's native KV-head layout through Hadamard and
-        # INT4 packing. CodeLlama-34B has 8 KV heads but 64 query heads;
-        # expanding FP16 K/V first creates two 2 GiB temporaries for B=8,
-        # S=2048 and can exhaust a 32 GiB device. The current decode kernel
-        # still requires an MHA-layout cache, so replicate only the packed
-        # values and their small quantization parameters below.
         if use_fused_append and self.cache_heads != num_heads:
             repeats = self.cache_heads // num_heads
             key_states = key_states.repeat_interleave(repeats, dim=2)
@@ -246,7 +304,7 @@ class MultiLayerPagedKVCache4Bit(Cache):
         else:
             key_states, k_scale, k_zero = asym_quantize_and_pack_i4(key_states)
             value_states, v_scale, v_zero = asym_quantize_and_pack_i4(value_states)
-        
+
         if not use_fused_append and self.cache_heads != num_heads:
             repeats = self.cache_heads // num_heads
             key_states = key_states.repeat_interleave(repeats, dim=2)
@@ -269,9 +327,20 @@ class MultiLayerPagedKVCache4Bit(Cache):
             new_length = current_length + added_length
             self._ensure_page_cnt_per_batch(self.page_cnt_from_length(new_length))
             self.length = new_length
+            if self._transaction is not None:
+                self._transaction.proposed_length = new_length
         attention_mask = cache_kwargs.get("attention_mask")
         if self._needs_init[layer_idx]:
             self._needs_init[layer_idx] = False
+            if use_fused_append:
+                fused_append_kv_i4(
+                    **self.get_cache_specs_for_flash_infer(None),
+                    k=key_states.contiguous(), v=value_states.contiguous(),
+                    num_layers=self.n_layers, layer_idx=layer_idx,
+                    num_heads=num_heads, page_size=self.page_size,
+                    batch_size=self.batch_size,
+                )
+                return orig_key_states, orig_value_states
             if attention_mask is not None:
                 nonzero_indices = torch.nonzero(attention_mask.flatten(), as_tuple=False).flatten().view(-1, 1)
                 key_states = key_states.view(self.batch_size * added_length, num_heads * quantized_head_dim)
@@ -300,16 +369,15 @@ class MultiLayerPagedKVCache4Bit(Cache):
             )
             return orig_key_states, orig_value_states
         else:
-            assert added_length == 1
             specs = self.get_cache_specs_for_flash_infer(attention_mask)
             if use_fused_append:
                 fused_append_kv_i4(
-                    **specs, k=key_states.view(self.batch_size, num_heads, head_dim),
-                    v=value_states.view(self.batch_size, num_heads, head_dim),
+                    **specs, k=key_states.contiguous(),
+                    v=value_states.contiguous(),
                     num_layers=self.n_layers, layer_idx=layer_idx, num_heads=num_heads,
                     page_size=self.page_size, batch_size=self.batch_size,
                 )
-            else:
+            elif added_length == 1:
                 append_kv = append_kv_f16 if self.disable_quant else append_kv_i4
                 append_kv(
                     **specs,
@@ -319,12 +387,62 @@ class MultiLayerPagedKVCache4Bit(Cache):
                     v_param=v_param.view(-1, num_heads, 2),
                     layer_idx=layer_idx,
                 )
+            else:
+                # FlashInfer's prefill append kernel writes the supplied suffix
+                # at (final sequence length - suffix length). This provides a
+                # single-launch provisional chunk append without reallocating
+                # or copying the existing cache.
+                seqlen_indptr = (
+                    torch.arange(self.batch_size + 1, device=self.device,
+                                 dtype=torch.int32) * added_length)
+                init_kv = init_kv_f16 if self.disable_quant else init_kv_i4
+                init_kv(
+                    **specs,
+                    k=key_states.view(-1, num_heads, quantized_head_dim),
+                    v=value_states.view(-1, num_heads, quantized_head_dim),
+                    k_param=k_param.view(-1, num_heads, 2),
+                    v_param=v_param.view(-1, num_heads, 2),
+                    seqlen_indptr=seqlen_indptr,
+                    layer_idx=layer_idx,
+                )
+            attention_specs = (self.get_virtual_cache_specs(added_length)
+                               if added_length > 1 else specs)
         return functools.partial(
-            self._stub.forward, 
+            self._stub.forward,
             num_kv_heads=num_heads,
-            attention_kwargs=self.get_cache_specs_for_flash_infer(attention_mask),
-            layer_idx=layer_idx, 
+            attention_kwargs=(attention_specs if not self._needs_init[layer_idx]
+                              else self.get_cache_specs_for_flash_infer(attention_mask)),
+            layer_idx=layer_idx,
         )
+
+    def get_virtual_cache_specs(self, chunk_length):
+        """Build causal paged metadata for B*chunk independent decode rows."""
+        if chunk_length < 1:
+            raise ValueError("chunk_length must be positive")
+        start = self.length - chunk_length
+        indptr = [0]
+        indices = []
+        offsets = []
+        for batch in range(self.batch_size):
+            for token in range(chunk_length):
+                seq_len = start + token + 1
+                pages = self.page_cnt_from_length(seq_len)
+                indices.extend(page * self.batch_size + batch
+                               for page in range(pages))
+                indptr.append(len(indices))
+                offset = seq_len % self.page_size
+                offsets.append(self.page_size if seq_len and offset == 0
+                               else offset)
+        return {
+            "kv_data": self.pages,
+            "kv_indptr": torch.tensor(indptr, device=self.device,
+                                      dtype=torch.int32),
+            "kv_indices": torch.tensor(indices, device=self.device,
+                                       dtype=torch.int32),
+            "last_page_offset": torch.tensor(offsets, device=self.device,
+                                             dtype=torch.int32),
+            "kv_param": self.scales,
+        }
     
     def get_cache_specs_for_flash_infer(self, attention_mask):
         if attention_mask is not None:
@@ -350,6 +468,12 @@ class MultiLayerPagedKVCache4Bit(Cache):
     def get_seq_length(self, layer_idx: Optional[int] = 0) -> int:
         """Returns the sequence length of the cached states. A layer index can be optionally passed."""
         return self.length
+
+    def get_mask_sizes(self, cache_position: torch.Tensor,
+                       layer_idx: int) -> Tuple[int, int]:
+        """Transformers >=4.53 causal-mask compatibility for the custom cache."""
+        del layer_idx
+        return self.length + cache_position.shape[0], 0
 
     def get_max_length(self) -> Optional[int]:
         """Returns the maximum sequence length of the cached states, if there is any."""

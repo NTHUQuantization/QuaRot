@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="690" viewBox="0 0 1120 690">
+<rect width="100%" height="100%" fill="#ffffff"/>
+<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#175CD3"/></marker></defs>
+<style>text{font-family:Inter,Arial,sans-serif;fill:#101828}.title{font-size:24px;font-weight:700}.axis{font-size:14px}.small{font-size:12px}.grid{stroke:#E4E7EC;stroke-width:1}.dash{stroke-dasharray:6 5}</style>
+<text class="title" x="105" y="37">R9700 roofs and measured cold-cache PARD2 points</text>
+<line class="grid" x1="105.0" y1="70" x2="105.0" y2="570"/>
+<text class="axis" x="105.0" y="595" text-anchor="middle">0.5</text>
+<line class="grid" x1="182.7" y1="70" x2="182.7" y2="570"/>
+<text class="axis" x="182.7" y="595" text-anchor="middle">1</text>
+<line class="grid" x1="338.2" y1="70" x2="338.2" y2="570"/>
+<text class="axis" x="338.2" y="595" text-anchor="middle">4</text>
+<line class="grid" x1="493.6" y1="70" x2="493.6" y2="570"/>
+<text class="axis" x="493.6" y="595" text-anchor="middle">16</text>
+<line class="grid" x1="649.1" y1="70" x2="649.1" y2="570"/>
+<text class="axis" x="649.1" y="595" text-anchor="middle">64</text>
+<line class="grid" x1="804.5" y1="70" x2="804.5" y2="570"/>
+<text class="axis" x="804.5" y="595" text-anchor="middle">256</text>
+<line class="grid" x1="959.9" y1="70" x2="959.9" y2="570"/>
+<text class="axis" x="959.9" y="595" text-anchor="middle">1024</text>
+<line class="grid" x1="1035.0" y1="70" x2="1035.0" y2="570"/>
+<text class="axis" x="1035.0" y="595" text-anchor="middle">2000</text>
+<line class="grid" x1="105" y1="570.0" x2="1035" y2="570.0"/>
+<text class="axis" x="91" y="575.0" text-anchor="end">0.1</text>
+<line class="grid" x1="105" y1="445.0" x2="1035" y2="445.0"/>
+<text class="axis" x="91" y="450.0" text-anchor="end">1</text>
+<line class="grid" x1="105" y1="320.0" x2="1035" y2="320.0"/>
+<text class="axis" x="91" y="325.0" text-anchor="end">10</text>
+<line class="grid" x1="105" y1="195.0" x2="1035" y2="195.0"/>
+<text class="axis" x="91" y="200.0" text-anchor="end">100</text>
+<line class="grid" x1="105" y1="70.0" x2="1035" y2="70.0"/>
+<text class="axis" x="91" y="75.0" text-anchor="end">1000</text>
+<polyline points="105.0,506.9 977.4,84.5 1035.0,84.5" fill="none" stroke="#D92D20" stroke-width="3"/>
+<polyline points="105.0,506.9 821.7,159.9 1035.0,159.9" fill="none" stroke="#7F56D9" stroke-width="3"/>
+<text class="axis" x="990.9" y="74.5" fill="#D92D20">INT4 WMMA: 766 TOPS</text>
+<text class="axis" x="867.7" y="149.9" fill="#7F56D9">BF16/FP16 matrix: 191 TFLOP/s</text>
+<text class="axis" x="260.4" y="419.6" transform="rotate(-28 260.4 419.6)" fill="#475467">640 GB/s memory roof</text>
+<circle cx="182.7" cy="469.2" r="7" fill="#fff" stroke="#F79009" stroke-width="2"/>
+<text class="small" x="192.7" y="457.2" fill="#F79009">RMSNorm/quant region</text>
+<circle cx="334.6" cy="395.7" r="7" fill="#fff" stroke="#175CD3" stroke-width="2"/>
+<text class="small" x="344.6" y="383.7" fill="#175CD3">M1 640-GB/s roof</text>
+<circle cx="484.6" cy="323.1" r="7" fill="#fff" stroke="#7F56D9" stroke-width="2"/>
+<text class="small" x="494.6" y="311.1" fill="#7F56D9">BF16 640-GB/s roof</text>
+<circle cx="645.5" cy="245.2" r="7" fill="#fff" stroke="#039855" stroke-width="2"/>
+<text class="small" x="655.5" y="233.2" fill="#039855">M16 640-GB/s roof</text>
+<line class="dash" x1="334.6" y1="435.0" x2="334.6" y2="395.7" stroke="#175CD3" stroke-width="1.5"/>
+<circle cx="334.6" cy="435.0" r="7" fill="#175CD3" stroke="#fff" stroke-width="2"/>
+<text class="axis" x="344.6" y="453.0" fill="#175CD3">M1 measured 1.20 TOP/s</text>
+<line class="dash" x1="484.6" y1="387.1" x2="484.6" y2="323.1" stroke="#7F56D9" stroke-width="1.5"/>
+<circle cx="484.6" cy="387.1" r="7" fill="#7F56D9" stroke="#fff" stroke-width="2"/>
+<text class="axis" x="494.6" y="405.1" fill="#7F56D9">BF16 measured 2.90 TOP/s</text>
+<line class="dash" x1="645.5" y1="284.5" x2="645.5" y2="245.2" stroke="#039855" stroke-width="1.5"/>
+<circle cx="645.5" cy="284.5" r="7" fill="#039855" stroke="#fff" stroke-width="2"/>
+<text class="axis" x="655.5" y="302.5" fill="#039855">M16 measured 19.25 TOP/s</text>
+<line class="dash" x1="334.6" y1="435.0" x2="645.5" y2="284.5" stroke="#175CD3" stroke-width="2" marker-end="url(#arrow)"/>
+<text class="axis" x="570.0" y="635" text-anchor="middle">Operational intensity (useful op / algorithmic byte, log scale)</text>
+<text class="axis" transform="translate(25 320.0) rotate(-90)" text-anchor="middle">Measured useful throughput (TOP/s, log scale)</text>
+<text class="small" x="105" y="660" fill="#475467">Filled = measured HIP-event latency + exact tensor bytes; hollow = 640-GB/s roof. GL2C DRAM PMCs returned zero and are not used.</text>
+</svg>

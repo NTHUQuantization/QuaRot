@@ -25,7 +25,20 @@ class QuarotAttentionMixin:
 
     def forward(self, hidden_states, position_embeddings, attention_mask=None,
                 past_key_value=None, cache_position=None, **kwargs):
-        bsz, q_len, _ = hidden_states.shape
+        # Transformers 4.57 Qwen3 passes the cache as past_key_values
+        # (plural), while Llama/Qwen2 releases used the singular spelling.
+        # Normalize both names here; otherwise Qwen3 silently runs every token
+        # as a cache-less prefill and never updates the paged KV4 state.
+        plural_cache = kwargs.pop("past_key_values", None)
+        if past_key_value is None:
+            past_key_value = plural_cache
+        if isinstance(hidden_states, quarot.PackedQuantizedTensor):
+            if hidden_states.logical_shape is None:
+                raise ValueError(
+                    "packed attention input requires logical_shape metadata")
+            bsz, q_len, _ = hidden_states.logical_shape
+        else:
+            bsz, q_len, _ = hidden_states.shape
         hidden_states = self.quantizer(hidden_states)
         shape = (bsz, q_len, -1, self.head_dim)
         query_states = self.q_proj(hidden_states).view(shape)
@@ -104,7 +117,13 @@ class QuarotMLPMixin:
             and inner in (32, 64, 128, 256, 512, 1024))
 
     def _should_use_fused_ffn(self, x):
-        is_prefill = x.dim() >= 3 and x.shape[-2] > 1
+        if isinstance(x, quarot.PackedQuantizedTensor):
+            if x.logical_shape is None:
+                raise ValueError("packed MLP input requires logical_shape metadata")
+            logical_shape = x.logical_shape
+        else:
+            logical_shape = x.shape
+        is_prefill = len(logical_shape) >= 3 and logical_shape[-2] > 1
         return self._fused_ffn and not (
             is_prefill and
             self.intermediate_size in self._unfused_prefill_widths)
@@ -146,7 +165,8 @@ class QuarotCausalLMMixin:
                 self.config.hidden_size, eps=self.config.rms_norm_eps)
         self._expected_max_length = None
 
-    def build_cache(self, batch_size, page_size, max_length):
+    def build_cache(self, batch_size, page_size, max_length, native_gqa=True,
+                    fused_decode_append=True):
         projection = self.model.layers[0].self_attn.v_proj
         if isinstance(projection, quarot.nn.Linear4bit):
             device, dtype = projection.weight.device, torch.float16
@@ -158,6 +178,8 @@ class QuarotCausalLMMixin:
             device=device, n_layers=len(self.model.layers),
             num_heads=self.config.num_attention_heads,
             num_kv_heads=self.config.num_key_value_heads,
+            native_gqa=native_gqa,
+            fused_decode_append=fused_decode_append,
             head_dim=config_head_dim(self.config), disable_quant=disable_quant,
             hadamard_dtype=None if disable_quant else dtype)
 

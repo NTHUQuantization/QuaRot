@@ -44,9 +44,10 @@ def main(args):
     }[args.rotation_dtype]
     print(f"Offline fusion/rotation: device={rotation_device}, "
           f"dtype={rotation_dtype}", flush=True)
+    final_norm_weight = model.model.norm.weight.detach().cpu().float().clone()
     rotation_utils.fuse_layer_norms(
         model, device=rotation_device, dtype=rotation_dtype)
-    rotation_utils.rotate_model(
+    rotation_signs = rotation_utils.rotate_model(
         model, device=rotation_device, dtype=rotation_dtype)
     if args.w_rtn:
         quantizers = gptq_utils.rtn_fwrd(model, device, args)
@@ -76,6 +77,8 @@ def main(args):
 
     runtime_config = config_cls.from_pretrained(
         args.model, attn_implementation="flash_attention_2")
+    runtime_config.quarot_rotation_signs = rotation_signs.tolist()
+    runtime_config.quarot_final_norm_weight = final_norm_weight.tolist()
     old_dtype = torch.get_default_dtype()
     torch.set_default_dtype(torch.float16)
     with transformers.modeling_utils.no_init_weights():

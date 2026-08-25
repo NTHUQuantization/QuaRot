@@ -795,6 +795,15 @@ void dispatch_matmul_bpre_only(const Int4Storage* A,
         throw std::runtime_error("K must be a multiple of 32");
     }
 
+    if(M <= 16u && env_flag_enabled("QUAROT_ENABLE_M16_BPRE"))
+    {
+        // PARD2 verification is padded to one WMMA M tile. Keep all four
+        // waves on that tile and distribute them across N.
+        launch_bpre<1, 4, 1, 2>(A, BPre, C, M, N, K);
+        check_hip(hipGetLastError(), "dispatch_matmul_bpre_only M16 launch");
+        return;
+    }
+
     switch(select_variant(N))
     {
     case DispatchVariant::Kv1024LdsSwizzle:

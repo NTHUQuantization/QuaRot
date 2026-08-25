@@ -195,6 +195,44 @@ void batch_decode_i4(torch::Tensor o, torch::Tensor q, torch::Tensor kv_data,
       page_size, batch_size); }
 }
 
+void batch_decode_i4_gqa(torch::Tensor o, torch::Tensor q,
+                         torch::Tensor kv_data, torch::Tensor kv_param,
+                         torch::Tensor kv_indptr, torch::Tensor kv_indicies,
+                         torch::Tensor last_page_offset, int layer_idx) {
+  CHECK_INPUT(o); CHECK_INPUT(q); CHECK_INPUT(kv_data); CHECK_INPUT(kv_param);
+  CHECK_INPUT(kv_indptr); CHECK_INPUT(kv_indicies); CHECK_INPUT(last_page_offset);
+  CHECK_DIM(3, o); CHECK_DIM(3, q); CHECK_DIM(6, kv_data); CHECK_DIM(6, kv_param);
+  CHECK_DIM(1, kv_indptr); CHECK_DIM(1, kv_indicies); CHECK_DIM(1, last_page_offset);
+  CHECK_EQ(kv_data.scalar_type(), at::ScalarType::Byte);
+  CHECK_EQ(kv_param.scalar_type(), at::ScalarType::Half);
+  CHECK_SHAPE(o, q);
+  const int batch_size = static_cast<int>(q.size(0));
+  const int num_q_heads = static_cast<int>(q.size(1));
+  const int num_kv_heads = static_cast<int>(kv_data.size(3));
+  const int num_layers = static_cast<int>(kv_data.size(1));
+  const int page_size = static_cast<int>(kv_data.size(4));
+  const int head_dim = static_cast<int>(kv_data.size(5)) * 2;
+  CHECK_EQ(q.size(2), head_dim);
+  CHECK_EQ(kv_indptr.size(0), batch_size + 1);
+  CHECK_EQ(last_page_offset.size(0), batch_size);
+  TORCH_CHECK(num_q_heads % num_kv_heads == 0,
+              "query heads must be divisible by KV heads");
+  if (head_dim == 64) {
+    FlashInferBatchDecodeKernel_i4_gqa<64>(
+        (__half*)o.data_ptr(), (__half*)q.data_ptr(), kv_data.data_ptr(),
+        (__half2*)kv_param.data_ptr(), kv_indptr.data_ptr<int32_t>(),
+        kv_indicies.data_ptr<int32_t>(), last_page_offset.data_ptr<int32_t>(),
+        num_layers, layer_idx, num_q_heads, num_kv_heads, page_size, batch_size);
+  } else {
+    TORCH_CHECK(head_dim == 128, "head_dim must be 64 or 128");
+    FlashInferBatchDecodeKernel_i4_gqa<128>(
+        (__half*)o.data_ptr(), (__half*)q.data_ptr(), kv_data.data_ptr(),
+        (__half2*)kv_param.data_ptr(), kv_indptr.data_ptr<int32_t>(),
+        kv_indicies.data_ptr<int32_t>(), last_page_offset.data_ptr<int32_t>(),
+        num_layers, layer_idx, num_q_heads, num_kv_heads, page_size, batch_size);
+  }
+}
+
 void init_kv_i4(torch::Tensor kv_data, torch::Tensor kv_param,
                 torch::Tensor kv_indptr, torch::Tensor kv_indicies,
                 torch::Tensor last_page_offset, torch::Tensor k,
@@ -338,6 +376,44 @@ void batch_decode_f16(torch::Tensor o, torch::Tensor q, torch::Tensor kv_data,
       kv_indptr.data_ptr<int32_t>(), kv_indicies.data_ptr<int32_t>(),
       last_page_offset.data_ptr<int32_t>(), num_layers, layer_idx, num_heads,
       page_size, batch_size); }
+}
+
+void batch_decode_f16_gqa(torch::Tensor o, torch::Tensor q,
+                          torch::Tensor kv_data, torch::Tensor kv_param,
+                          torch::Tensor kv_indptr, torch::Tensor kv_indicies,
+                          torch::Tensor last_page_offset, int layer_idx) {
+  CHECK_INPUT(o); CHECK_INPUT(q); CHECK_INPUT(kv_data); CHECK_INPUT(kv_param);
+  CHECK_INPUT(kv_indptr); CHECK_INPUT(kv_indicies); CHECK_INPUT(last_page_offset);
+  CHECK_DIM(3, o); CHECK_DIM(3, q); CHECK_DIM(6, kv_data); CHECK_DIM(6, kv_param);
+  CHECK_DIM(1, kv_indptr); CHECK_DIM(1, kv_indicies); CHECK_DIM(1, last_page_offset);
+  CHECK_EQ(kv_data.scalar_type(), at::ScalarType::Half);
+  CHECK_EQ(kv_param.scalar_type(), at::ScalarType::Half);
+  CHECK_SHAPE(o, q);
+  const int batch_size = static_cast<int>(q.size(0));
+  const int num_q_heads = static_cast<int>(q.size(1));
+  const int num_kv_heads = static_cast<int>(kv_data.size(3));
+  const int num_layers = static_cast<int>(kv_data.size(1));
+  const int page_size = static_cast<int>(kv_data.size(4));
+  const int head_dim = static_cast<int>(kv_data.size(5));
+  CHECK_EQ(q.size(2), head_dim);
+  CHECK_EQ(kv_indptr.size(0), batch_size + 1);
+  CHECK_EQ(last_page_offset.size(0), batch_size);
+  TORCH_CHECK(num_q_heads % num_kv_heads == 0,
+              "query heads must be divisible by KV heads");
+  if (head_dim == 64) {
+    FlashInferBatchDecodeKernel_f16_gqa<64>(
+        (__half*)o.data_ptr(), (__half*)q.data_ptr(), kv_data.data_ptr(),
+        (__half2*)kv_param.data_ptr(), kv_indptr.data_ptr<int32_t>(),
+        kv_indicies.data_ptr<int32_t>(), last_page_offset.data_ptr<int32_t>(),
+        num_layers, layer_idx, num_q_heads, num_kv_heads, page_size, batch_size);
+  } else {
+    TORCH_CHECK(head_dim == 128, "head_dim must be 64 or 128");
+    FlashInferBatchDecodeKernel_f16_gqa<128>(
+        (__half*)o.data_ptr(), (__half*)q.data_ptr(), kv_data.data_ptr(),
+        (__half2*)kv_param.data_ptr(), kv_indptr.data_ptr<int32_t>(),
+        kv_indicies.data_ptr<int32_t>(), last_page_offset.data_ptr<int32_t>(),
+        num_layers, layer_idx, num_q_heads, num_kv_heads, page_size, batch_size);
+  }
 }
 
 void init_kv_f16(torch::Tensor kv_data, torch::Tensor kv_param,
@@ -486,11 +562,17 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m
           py::arg("q"), py::arg("scale_row"), py::arg("scale_col"),
           py::arg("bits"));
     m.def("batch_decode_i4", &batch_decode_i4, "");
+    m.def("batch_decode_i4_gqa", &batch_decode_i4_gqa, "Native GQA INT4 paged decode");
     m.def("init_kv_i4", &init_kv_i4, "");
     m.def("append_kv_i4", &append_kv_i4, "");
     m.def("batch_decode_f16", &batch_decode_f16, "");
+    m.def("batch_decode_f16_gqa", &batch_decode_f16_gqa, "Native GQA FP16 paged decode");
     m.def("init_kv_f16", &init_kv_f16, "");
     m.def("append_kv_f16", &append_kv_f16, "");
+    m.def("rms_norm_rows", &rms_norm_rows,
+          "Row-independent FP16 RMSNorm");
+    m.def("rms_norm_quant_i4_rows", &rms_norm_quant_i4_rows,
+          "Fused row-independent FP16 RMSNorm and signed INT4 quantization");
     m.def("fused_append_kv_i4", &fused_append_kv_i4, "Fused Hadamard, asymmetric INT4 quantization, and paged KV-cache append");
     m.def("fused_attention_hadamard_quant", &fused_attention_hadamard_quant, "Fused attention-output Hadamard and signed INT4 quantization");
     m.def("fused_attention_hadamard_quant_general", &fused_attention_hadamard_quant_general, "Fused general attention-output orthogonal transform and INT4 quantization");

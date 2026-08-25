@@ -132,6 +132,8 @@ def rotate_ov_proj(layer, head_num, head_dim):
 @torch.inference_mode()
 def rotate_model(model, device="cpu", dtype=torch.float64):
     Q = random_hadamard_matrix(model.config.hidden_size, device, dtype=dtype)
+    # random_hadamard_matrix constructs Q = D H. Persist D for PARD2-TD.
+    rotation_signs = torch.sign(Q[:, 0]).to(torch.int8).cpu()
     config = model.config
     num_heads = config.num_attention_heads
     model_dim = config.hidden_size
@@ -149,3 +151,4 @@ def rotate_model(model, device="cpu", dtype=torch.float64):
         rotate_mlp_input(layers[idx], Q, device, dtype)
         rotate_mlp_output(layers[idx], Q, device, dtype)
         rotate_ov_proj(layers[idx], num_heads, head_dim)
+    return rotation_signs

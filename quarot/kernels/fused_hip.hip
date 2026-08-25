@@ -44,6 +44,83 @@ __device__ __forceinline__ float reduce_max(float value, float* scratch) {
   return scratch[0];
 }
 
+__global__ void rms_norm_rows_kernel(
+    const half* input, half* output, int rows, int width, float denominator,
+    float eps) {
+  __shared__ float scratch[kThreads];
+  const int row = blockIdx.x;
+  const int tid = threadIdx.x;
+  float local_sum = 0.0f;
+  for (int column = tid; column < width; column += blockDim.x) {
+    const float value = __half2float(input[row * width + column]);
+    local_sum += value * value;
+  }
+  scratch[tid] = local_sum;
+  __syncthreads();
+  for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+    if (tid < stride) scratch[tid] += scratch[tid + stride];
+    __syncthreads();
+  }
+  const float inverse = rsqrtf(scratch[0] / denominator + eps);
+  for (int column = tid; column < width; column += blockDim.x) {
+    output[row * width + column] =
+        __float2half(__half2float(input[row * width + column]) * inverse);
+  }
+}
+__global__ void rms_norm_quant_i4_rows_kernel(
+    const half* input, uint8_t* packed, half* scales, int rows, int width,
+    float denominator, float eps) {
+  __shared__ float reduce_scratch[kThreads];
+  extern __shared__ half normalized[];
+  const int row = blockIdx.x;
+  const int tid = threadIdx.x;
+
+  float local_sum = 0.0f;
+  for (int column = tid; column < width; column += blockDim.x) {
+    const float value = __half2float(input[row * width + column]);
+    local_sum += value * value;
+  }
+  reduce_scratch[tid] = local_sum;
+  __syncthreads();
+  for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+    if (tid < stride) reduce_scratch[tid] += reduce_scratch[tid + stride];
+    __syncthreads();
+  }
+
+  const float inverse = rsqrtf(reduce_scratch[0] / denominator + eps);
+  for (int column = tid; column < width; column += blockDim.x) {
+    normalized[column] = __float2half(
+        __half2float(input[row * width + column]) * inverse);
+  }
+  __syncthreads();
+
+  float local_max = 0.0f;
+  for (int column = tid; column < width; column += blockDim.x) {
+    local_max = fmaxf(local_max, fabsf(__half2float(normalized[column])));
+  }
+  reduce_scratch[tid] = local_max;
+  __syncthreads();
+  for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+    if (tid < stride) {
+      reduce_scratch[tid] =
+          fmaxf(reduce_scratch[tid], reduce_scratch[tid + stride]);
+    }
+    __syncthreads();
+  }
+  const half scale_h = __hdiv(__float2half(reduce_scratch[0]),
+                              __float2half(7.0f));
+  if (tid == 0) scales[row] = scale_h;
+
+  for (int pair = tid; pair < width / 2; pair += blockDim.x) {
+    const half low_h = __hdiv(normalized[pair * 2], scale_h);
+    const half high_h = __hdiv(normalized[pair * 2 + 1], scale_h);
+    const int low = max(-8, min(7, __float2int_rn(__half2float(low_h))));
+    const int high = max(-8, min(7, __float2int_rn(__half2float(high_h))));
+    packed[row * (width / 2) + pair] = pack_s4_pair(low, high);
+  }
+}
+
+
 // Adapted from third-party/hadacore's HIP N=32/64 small-warp path.
 // gfx12 executes wave32; keeping the transform in registers removes the six
 // workgroup-wide barriers and repeated LDS traffic of the scalar butterfly.
@@ -127,20 +204,24 @@ __global__ void fused_append_kv_i4_kernel(
     const half* key, const half* value, uint8_t* kv_data, half2* kv_param,
     const int32_t* kv_indptr, const int32_t* kv_indices,
     const int32_t* last_page_offset, int num_layers, int layer_idx,
-    int num_heads, int page_size, int batch_size) {
+    int num_heads, int page_size, int batch_size, int added_length) {
   __shared__ float k_values[HeadDim];
   __shared__ float v_values[HeadDim];
   __shared__ float scratch[HeadDim];
   const int tid = threadIdx.x;
-  const int batch = blockIdx.x;
+  const int row = blockIdx.x;
+  const int batch = row / added_length;
+  const int token = row - batch * added_length;
   const int head = blockIdx.y;
   if (batch >= batch_size || head >= num_heads || tid >= HeadDim) return;
 
   const int seq_len = (kv_indptr[batch + 1] - kv_indptr[batch] - 1) * page_size + last_page_offset[batch];
-  if (seq_len <= 0) return;
-  const int page = kv_indices[kv_indptr[batch] + (seq_len - 1) / page_size];
-  const int slot = (seq_len - 1) % page_size;
-  const int input = (batch * num_heads + head) * HeadDim + tid;
+  const int position = seq_len - added_length + token;
+  if (position < 0) return;
+  const int page =
+      kv_indices[kv_indptr[batch] + position / page_size];
+  const int slot = position % page_size;
+  const int input = (row * num_heads + head) * HeadDim + tid;
   k_values[tid] = __half2float(key[input]);
   v_values[tid] = __half2float(value[input]);
   __syncthreads();
@@ -167,8 +248,9 @@ __global__ void fused_append_kv_i4_kernel(
   }
   __syncthreads();
 
-  hadamard(v_values, HeadDim);
-  float vx = v_values[tid] * rsqrtf(float(HeadDim));
+  // QuaRot rotates Q/K inside each attention head, but V remains in its
+  // original basis. This must match the prefill/chunk asym-quant path.
+  float vx = v_values[tid];
   v_values[tid] = vx;
   float vmax = reduce_max(vx, scratch);
   __syncthreads();
@@ -678,6 +760,55 @@ bool power_of_two(int64_t x) { return x > 0 && (x & (x - 1)) == 0; }
 
 }  // namespace
 
+torch::Tensor rms_norm_rows(
+    torch::Tensor input, int64_t mean_dim, double eps) {
+  check_cuda_half_contiguous(input, "input");
+  TORCH_CHECK(input.dim() >= 1 && input.size(-1) == mean_dim,
+              "RMSNorm mean_dim must equal the input width");
+  const int64_t width = input.size(-1);
+  const int64_t rows = input.numel() / width;
+  auto output = torch::empty_like(input);
+  at::hip::HIPGuard guard{static_cast<char>(input.get_device())};
+  hipLaunchKernelGGL(rms_norm_rows_kernel, dim3(rows), dim3(kThreads), 0,
+      at::hip::getCurrentHIPStream().stream(),
+      reinterpret_cast<const half*>(input.data_ptr<at::Half>()),
+      reinterpret_cast<half*>(output.data_ptr<at::Half>()),
+      static_cast<int>(rows), static_cast<int>(width),
+      static_cast<float>(mean_dim), static_cast<float>(eps));
+  TORCH_CHECK(hipGetLastError() == hipSuccess,
+              "row-independent RMSNorm launch failed");
+  return output;
+}
+
+std::vector<torch::Tensor> rms_norm_quant_i4_rows(
+    torch::Tensor input, int64_t mean_dim, double eps) {
+  check_cuda_half_contiguous(input, "input");
+  TORCH_CHECK(input.dim() >= 1 && input.size(-1) == mean_dim,
+              "RMSNorm mean_dim must equal the input width");
+  const int64_t width = input.size(-1);
+  TORCH_CHECK(width > 0 && width <= kMaxFusedWidth && width % 2 == 0,
+              "fused RMSNorm+INT4 supports positive even widths up to ",
+              kMaxFusedWidth);
+  const int64_t rows = input.numel() / width;
+  TORCH_CHECK(rows > 0, "fused RMSNorm+INT4 does not support empty tensors");
+  auto packed_shape = input.sizes().vec(); packed_shape.back() = width / 2;
+  auto scale_shape = input.sizes().vec(); scale_shape.back() = 1;
+  auto packed = torch::empty(packed_shape, input.options().dtype(torch::kUInt8));
+  auto scales = torch::empty(scale_shape, input.options());
+  at::hip::HIPGuard guard{static_cast<char>(input.get_device())};
+  hipLaunchKernelGGL(rms_norm_quant_i4_rows_kernel, dim3(rows),
+      dim3(kThreads), width * sizeof(half),
+      at::hip::getCurrentHIPStream().stream(),
+      reinterpret_cast<const half*>(input.data_ptr<at::Half>()),
+      packed.data_ptr<uint8_t>(),
+      reinterpret_cast<half*>(scales.data_ptr<at::Half>()),
+      static_cast<int>(rows), static_cast<int>(width),
+      static_cast<float>(mean_dim), static_cast<float>(eps));
+  TORCH_CHECK(hipGetLastError() == hipSuccess,
+              "fused RMSNorm+INT4 launch failed");
+  return {packed, scales};
+}
+
 void fused_append_kv_i4(
     torch::Tensor kv_data, torch::Tensor kv_param, torch::Tensor kv_indptr,
     torch::Tensor kv_indices, torch::Tensor last_page_offset, torch::Tensor key,
@@ -698,22 +829,29 @@ void fused_append_kv_i4(
               "paged-cache metadata lengths do not match batch_size");
   TORCH_CHECK(num_layers > 0 && num_heads > 0 && page_size > 0 && batch_size > 0,
               "cache dimensions must be positive");
-  const int64_t head_dim = key.size(2);
-  TORCH_CHECK(key.sizes() == value.sizes() && key.dim() == 3 &&
-              key.size(0) == batch_size && key.size(1) == num_heads &&
+  TORCH_CHECK(key.sizes() == value.sizes() &&
+              (key.dim() == 3 || key.dim() == 4),
+              "key/value must be rank 3 or 4");
+  const int64_t added_length = key.dim() == 4 ? key.size(1) : 1;
+  const int64_t head_axis = key.dim() - 2;
+  const int64_t head_dim = key.size(-1);
+  TORCH_CHECK(key.size(0) == batch_size &&
+              key.size(head_axis) == num_heads &&
               (head_dim == 64 || head_dim == 128),
-              "key/value must have shape [batch, heads, 64 or 128]");
+              "key/value must have shape [batch, (tokens), heads, 64 or 128]");
+  TORCH_CHECK(added_length >= 1,
+              "fused KV append requires at least one token");
   TORCH_CHECK(layer_idx >= 0 && layer_idx < num_layers, "layer_idx is outside the cache");
   at::hip::HIPGuard guard{static_cast<char>(key.get_device())};
 #define LAUNCH_FUSED_APPEND(HEAD_DIM) hipLaunchKernelGGL(\
-      (fused_append_kv_i4_kernel<HEAD_DIM>), dim3(batch_size, num_heads), \
+      (fused_append_kv_i4_kernel<HEAD_DIM>), dim3(batch_size * added_length, num_heads), \
       dim3(HEAD_DIM), 0, at::hip::getCurrentHIPStream().stream(), \
       reinterpret_cast<const half*>(key.data_ptr<at::Half>()), \
       reinterpret_cast<const half*>(value.data_ptr<at::Half>()), \
       kv_data.data_ptr<uint8_t>(), reinterpret_cast<half2*>(kv_param.data_ptr<at::Half>()), \
       kv_indptr.data_ptr<int32_t>(), kv_indices.data_ptr<int32_t>(), \
       last_page_offset.data_ptr<int32_t>(), num_layers, layer_idx, num_heads, \
-      page_size, batch_size)
+      page_size, batch_size, added_length)
   if (head_dim == 64) { LAUNCH_FUSED_APPEND(64); }
   else { LAUNCH_FUSED_APPEND(128); }
 #undef LAUNCH_FUSED_APPEND

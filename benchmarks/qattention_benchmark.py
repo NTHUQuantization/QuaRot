@@ -54,7 +54,7 @@ def quantized_kv_cache_decode(
     )
     query_states = torch.rand((batch_size, 1, num_q_heads, head_dim), device=device, dtype=torch.float16)
     key_states = torch.rand((batch_size, 1, num_kv_heads, head_dim), device=device, dtype=torch.float16)
-    value_states = torch.rand((batch_size, 1, num_heads, head_dim), device=device, dtype=torch.float16)
+    value_states = torch.rand((batch_size, 1, num_kv_heads, head_dim), device=device, dtype=torch.float16)
     def _fake_prefill_and_decode():
         cache._needs_init = [False] * len(cache._needs_init)
         cache.length = seq_len - 1

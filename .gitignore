@@ -1,3 +1,5 @@
+.pard_compile_cache/
+.torchinductor_cache_*/
 .ninja_deps
 *.o
 *.json

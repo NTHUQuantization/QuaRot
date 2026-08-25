@@ -1,0 +1,161 @@
+{
+  "kind": "td_hidden_tap_hook_overhead",
+  "contract": {
+    "target": "/workspace_root/qwen3_8b_fused_v1_rtn_w4a4kv4",
+    "tokenizer": "/workspace_root/.hf_cache/pard/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218",
+    "iterations": 10,
+    "warmups": 3,
+    "q_lengths": [
+      1,
+      16
+    ],
+    "cache_policy": "transaction rollback to fixed logical length",
+    "timing": "interleaved wall clock with torch.cuda.synchronize",
+    "store_ref_basis": "folded (final norm + three raw layer taps)"
+  },
+  "gpu_preflight": {
+    "free_bytes": 34139537408,
+    "total_bytes": 34208743424,
+    "preexisting_bytes": 69206016
+  },
+  "results": [
+    {
+      "q_len": 1,
+      "context_length": 32,
+      "cases": {
+        "no_hooks": {
+          "samples_ms": [
+            48.68042399175465,
+            48.29187016002834,
+            48.72199380770326,
+            48.64483396522701,
+            48.203842947259545,
+            48.2990110758692,
+            47.93331609107554,
+            48.834507120773196,
+            48.36187488399446,
+            48.764204140752554
+          ],
+          "median_ms": 48.503354424610734,
+          "mean_ms": 48.473587818443775,
+          "cv_percent": 0.6108828163546948,
+          "logits_exact": true,
+          "top1_exact": true,
+          "relative_to_no_hooks": 1.0,
+          "overhead_percent": 0.0
+        },
+        "noop_hooks": {
+          "samples_ms": [
+            49.85795891843736,
+            48.21826494298875,
+            48.70437690988183,
+            48.52396505884826,
+            47.99012606963515,
+            47.797394217923284,
+            47.89341497235,
+            48.40092803351581,
+            48.15551801584661,
+            48.362182918936014
+          ],
+          "median_ms": 48.290223930962384,
+          "mean_ms": 48.39041300583631,
+          "cv_percent": 1.2157082948404585,
+          "logits_exact": true,
+          "top1_exact": true,
+          "relative_to_no_hooks": 0.9956058607455774,
+          "overhead_percent": -0.43941392544225577
+        },
+        "store_ref_hooks": {
+          "samples_ms": [
+            49.72928203642368,
+            47.96012304723263,
+            48.16592996940017,
+            48.14405902288854,
+            48.15883794799447,
+            48.16945898346603,
+            48.206645995378494,
+            47.64079093001783,
+            48.156184144318104,
+            48.5449091065675
+          ],
+          "median_ms": 48.16238395869732,
+          "mean_ms": 48.287622118368745,
+          "cv_percent": 1.1468313264199137,
+          "logits_exact": true,
+          "top1_exact": true,
+          "relative_to_no_hooks": 0.9929701673222748,
+          "overhead_percent": -0.7029832677725167
+        }
+      }
+    },
+    {
+      "q_len": 16,
+      "context_length": 32,
+      "cases": {
+        "no_hooks": {
+          "samples_ms": [
+            95.97337595187128,
+            99.19587499462068,
+            98.80300890654325,
+            97.74994011968374,
+            113.97067597135901,
+            114.58841897547245,
+            95.10799311101437,
+            97.22358104772866,
+            101.01308603771031,
+            94.79034296236932
+          ],
+          "median_ms": 98.2764745131135,
+          "mean_ms": 100.84162980783731,
+          "cv_percent": 7.272739872419049,
+          "logits_exact": true,
+          "top1_exact": true,
+          "relative_to_no_hooks": 1.0,
+          "overhead_percent": 0.0
+        },
+        "noop_hooks": {
+          "samples_ms": [
+            102.06438903696835,
+            129.66057588346303,
+            95.9680168889463,
+            94.99647794291377,
+            94.29044299758971,
+            95.86024191230536,
+            95.0001128949225,
+            95.44285293668509,
+            95.57375917211175,
+            98.83907297626138
+          ],
+          "median_ms": 95.71700054220855,
+          "mean_ms": 99.76959426421672,
+          "cv_percent": 10.780794894988734,
+          "logits_exact": true,
+          "top1_exact": true,
+          "relative_to_no_hooks": 0.9739563920705823,
+          "overhead_percent": -2.6043607929417734
+        },
+        "store_ref_hooks": {
+          "samples_ms": [
+            109.38467900268734,
+            96.51794796809554,
+            97.63118904083967,
+            94.26592104136944,
+            94.3678030744195,
+            124.29748219437897,
+            94.92421289905906,
+            118.50774404592812,
+            98.03166682831943,
+            95.4853801522404
+          ],
+          "median_ms": 97.0745685044676,
+          "mean_ms": 102.34140262473375,
+          "cv_percent": 10.795176239991115,
+          "logits_exact": true,
+          "top1_exact": true,
+          "relative_to_no_hooks": 0.9877701554252893,
+          "overhead_percent": -1.2229844574710658
+        }
+      }
+    }
+  ]
+}

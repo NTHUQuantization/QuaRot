@@ -29,6 +29,40 @@ def _pack_s4(x, scale):
     return (q[..., 0::2].to(torch.uint8) & 0x0F) | ((q[..., 1::2].to(torch.uint8) & 0x0F) << 4)
 
 
+@pytest.mark.parametrize("rows", [1, 2, 15, 16])
+def test_rms_norm_rows_matches_independent_m1_launches(rows):
+    torch.manual_seed(9100 + rows)
+    value = torch.randn(
+        1, rows, 4096, device="cuda", dtype=torch.float16).contiguous()
+    actual = _HIP.rms_norm_rows(value, 4096, 1e-6)
+    expected = torch.cat([
+        _HIP.rms_norm_rows(value[:, index:index + 1], 4096, 1e-6)
+        for index in range(rows)
+    ], dim=1)
+    torch.cuda.synchronize()
+    assert torch.equal(actual, expected)
+
+
+@pytest.mark.parametrize("rows", [1, 15, 16])
+@pytest.mark.parametrize("out_features", [1024, 4096, 12288])
+def test_m16_bpre_gemm_matches_row_packed_oracle(rows, out_features, monkeypatch):
+    monkeypatch.setenv("QUAROT_ENABLE_M16_BPRE", "1")
+    torch.manual_seed(rows + out_features)
+    in_features = 4096
+    activation = torch.randint(
+        -8, 8, (rows, in_features), device="cuda", dtype=torch.int8)
+    weight = torch.randint(
+        -8, 8, (out_features, in_features), device="cuda", dtype=torch.int8)
+    packed_activation = _pack_s4(activation, 1).contiguous()
+    packed_weight = _pack_s4(weight, 1).contiguous()
+    prepacked_weight = _HIP.prepack_b(packed_weight)
+    actual = _HIP.matmul_bpre(
+        packed_activation, prepacked_weight, out_features, in_features)
+    expected = _HIP.matmul(packed_activation, packed_weight)
+    torch.cuda.synchronize()
+    assert torch.equal(actual, expected)
+
+
 def _reference_attention(x):
     # Same layout as OnlineHadamard(num_heads): rotate across heads for every
     # head-dimension coordinate, then quantize the flattened projection input.
@@ -85,7 +119,8 @@ def test_fused_kv_append_writes_target_asymmetric_cache(head_dim, page_size, pos
         slot = (position - 1) % page_size
         page_ids = indices[indptr[:-1] + page]
         for source, plane in ((key, 0), (value, 1)):
-            rotated = _hadamard(source)
+            rotated = (_hadamard(source) if plane == 0
+                       else source.float())
             xmin, xmax = rotated.amin(dim=-1, keepdim=True), rotated.amax(dim=-1, keepdim=True)
             scale = ((xmax - xmin).clamp_min(1e-5) / 15).half()
             zero = (-xmin).half()
@@ -249,7 +284,8 @@ def test_gqa_prefill_quantizes_before_cache_head_expansion(monkeypatch):
     monkeypatch.setattr(kv_cache, "asym_quantize_and_pack_i4", recording_quantize)
     cache = kv_cache.MultiLayerPagedKVCache4Bit(
         batch_size=2, page_size=16, max_seq_len=16, device="cuda",
-        n_layers=1, num_heads=4, num_kv_heads=2, head_dim=128)
+        n_layers=1, num_heads=4, num_kv_heads=2, head_dim=128,
+        native_gqa=False, fused_decode_append=False)
     torch.manual_seed(3408)
     key = torch.randn(2, 16, 2, 128, device="cuda", dtype=torch.float16)
     value = torch.randn_like(key)

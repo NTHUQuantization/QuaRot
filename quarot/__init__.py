@@ -76,11 +76,15 @@ def sym_dequant(q, scale_row, scale_col, bits=32):
 class PackedQuantizedTensor:
     def __init__(self,
                  quantized_x: torch.Tensor,
-                 scales_x: torch.Tensor):
+                 scales_x: torch.Tensor,
+                 logical_shape=None):
         self.quantized_x = quantized_x
         self.scales_x = scales_x
+        self.logical_shape = (None if logical_shape is None else
+                              tuple(int(dim) for dim in logical_shape))
 
     def size(self):
+        # Keep the historical storage-shape contract.
         return self.quantized_x.size()
 
     @property

@@ -1,0 +1,322 @@
+{
+  "formal_memory": {
+    "HumanEval": {
+      "AR": {
+        "source": "pard2_formal_results_hip_norm/ar_humaneval.json",
+        "runs": 240,
+        "median_peak_gib": 5.972976207733154,
+        "maximum_peak_gib": 6.05273962020874,
+        "minimum_headroom_percent": 81.00170006408243
+      },
+      "TI unoptimized": {
+        "source": "pard2_formal_results_hip_norm/pard2-ti_humaneval.json",
+        "runs": 240,
+        "median_peak_gib": 8.202366828918457,
+        "maximum_peak_gib": 8.621404647827148,
+        "minimum_headroom_percent": 72.9391909043189
+      },
+      "TD unoptimized": {
+        "source": "pard2_formal_results_hip_norm/pard2-td_humaneval.json",
+        "runs": 240,
+        "median_peak_gib": 8.253733158111572,
+        "maximum_peak_gib": 8.707563400268555,
+        "minimum_headroom_percent": 72.66875636992705
+      },
+      "TI mainline": {
+        "source": "pard2_optimization_results/formal_mainline/pard2-ti_humaneval.json",
+        "runs": 240,
+        "median_peak_gib": 8.20236611366272,
+        "maximum_peak_gib": 8.621404647827148,
+        "minimum_headroom_percent": 72.9391909043189
+      },
+      "TD mainline": {
+        "source": "pard2_optimization_results/formal_mainline/pard2-td_humaneval.json",
+        "runs": 240,
+        "median_peak_gib": 8.24901819229126,
+        "maximum_peak_gib": 8.693540573120117,
+        "minimum_headroom_percent": 72.71277112900012
+      }
+    },
+    "GSM8K": {
+      "AR": {
+        "source": "pard2_formal_results_hip_norm/ar_gsm8k.json",
+        "runs": 240,
+        "median_peak_gib": 5.953150033950806,
+        "maximum_peak_gib": 5.973121643066406,
+        "minimum_headroom_percent": 81.25160445530898
+      },
+      "TI unoptimized": {
+        "source": "pard2_formal_results_hip_norm/pard2-ti_gsm8k.json",
+        "runs": 240,
+        "median_peak_gib": 8.095454454421997,
+        "maximum_peak_gib": 8.204596042633057,
+        "minimum_headroom_percent": 74.24746705598255
+      },
+      "TD unoptimized": {
+        "source": "pard2_formal_results_hip_norm/pard2-td_gsm8k.json",
+        "runs": 240,
+        "median_peak_gib": 8.136456727981567,
+        "maximum_peak_gib": 8.255964756011963,
+        "minimum_headroom_percent": 74.08623127097765
+      },
+      "TI mainline": {
+        "source": "pard2_optimization_results/formal_mainline/pard2-ti_gsm8k.json",
+        "runs": 240,
+        "median_peak_gib": 8.096211433410645,
+        "maximum_peak_gib": 8.260917663574219,
+        "minimum_headroom_percent": 74.07068511678519
+      },
+      "TD mainline": {
+        "source": "pard2_optimization_results/formal_mainline/pard2-td_gsm8k.json",
+        "runs": 240,
+        "median_peak_gib": 8.134137392044067,
+        "maximum_peak_gib": 8.251280307769775,
+        "minimum_headroom_percent": 74.10093478679423
+      }
+    },
+    "MATH-500": {
+      "AR": {
+        "source": "pard2_formal_results_hip_norm/ar_math_500.json",
+        "runs": 60,
+        "median_peak_gib": 5.955631256103516,
+        "maximum_peak_gib": 6.035610198974609,
+        "minimum_headroom_percent": 81.05546578056033
+      },
+      "TI unoptimized": {
+        "source": "pard2_formal_results_hip_norm/pard2-ti_math_500.json",
+        "runs": 60,
+        "median_peak_gib": 8.113797664642334,
+        "maximum_peak_gib": 8.530977249145508,
+        "minimum_headroom_percent": 73.22302383789541
+      },
+      "TD unoptimized": {
+        "source": "pard2_formal_results_hip_norm/pard2-td_math_500.json",
+        "runs": 60,
+        "median_peak_gib": 8.156247615814209,
+        "maximum_peak_gib": 8.608495712280273,
+        "minimum_headroom_percent": 72.97970938764406
+      },
+      "TI mainline": {
+        "source": "pard2_optimization_results/formal_mainline/pard2-ti_math_500.json",
+        "runs": 60,
+        "median_peak_gib": 8.113797664642334,
+        "maximum_peak_gib": 8.530977249145508,
+        "minimum_headroom_percent": 73.22302383789541
+      },
+      "TD mainline": {
+        "source": "pard2_optimization_results/formal_mainline/pard2-td_math_500.json",
+        "runs": 60,
+        "median_peak_gib": 8.147685050964355,
+        "maximum_peak_gib": 8.596792221069336,
+        "minimum_headroom_percent": 73.01644423009135
+      }
+    }
+  },
+  "hardware": {
+    "model": "AMD Radeon AI PRO R9700 / gfx1201",
+    "memory_gb": 32,
+    "peak_bandwidth_gb_s": 640,
+    "fp16_matrix_tflop_s": 191,
+    "int4_matrix_top_s": 766,
+    "fp16_ridge_flop_per_byte": 298.4375,
+    "int4_ridge_op_per_byte": 1196.875,
+    "source": "https://www.amd.com/en/products/graphics/workstations/radeon-ai-pro/ai-9000-series/amd-radeon-ai-pro-r9700.html"
+  },
+  "analytical_operational_intensity_upper_bounds": {
+    "w4a4_ar_useful_m1": 4,
+    "w4a4_m16": 64,
+    "bf16_drafter_m15": 15,
+    "note": "Weights dominate; activation/output/scales lower real OI."
+  },
+  "microbenchmark": {
+    "4096x4096": {
+      "available": true,
+      "kernel": "gfx12 INT4 bpre_kernel<1,4,1,2>",
+      "m1_median_us": 38.0,
+      "m16_median_us": 37.9395,
+      "m16_over_m1": 0.9984078947368422,
+      "fetch_size_counter_values_kib": [
+        0.0
+      ],
+      "fetch_size_usable": false,
+      "note": "FETCH_SIZE=0 is inconsistent with operand size; do not use as DRAM traffic."
+    },
+    "4096x12288_qwen3_ffn": {
+      "available": true,
+      "kernel": "gfx12 INT4 bpre_kernel<1,4,1,2>",
+      "m1_median_us": 32.0195,
+      "m16_median_us": 32.3995,
+      "m16_over_m1": 1.011867768078827,
+      "fetch_size_counter_values_kib": [
+        0.0
+      ],
+      "fetch_size_usable": false,
+      "note": "FETCH_SIZE=0 is inconsistent with operand size; do not use as DRAM traffic."
+    }
+  },
+  "measured_roofline": {
+    "contract": {
+      "gpu": "",
+      "warmups": 5,
+      "samples": 30,
+      "cache_flush_bytes": 536870912,
+      "timing": "HIP events",
+      "bytes": "exact algorithmic tensor bytes, not PM-counter DRAM bytes",
+      "gl2c_counter_status": "unusable: zero for nonzero 8/24 MiB operands"
+    },
+    "w4a4_4096x12288": {
+      "timing": {
+        "samples_us": [
+          83.92000198364258,
+          84.1199979186058,
+          84.44000035524368,
+          83.92000198364258,
+          84.60000157356262,
+          83.83999764919281,
+          84.88000184297562,
+          84.63999629020691,
+          83.92000198364258,
+          84.27999913692474,
+          85.16000211238861,
+          83.80000293254852,
+          82.47999846935272,
+          83.12000334262848,
+          82.35999941825867,
+          83.20000022649765,
+          83.24000239372253,
+          83.0409973859787,
+          83.83999764919281,
+          84.60099995136261,
+          82.63999968767166,
+          82.12099969387054,
+          83.40000361204147,
+          83.0800011754036,
+          82.71999657154083,
+          82.99999684095383,
+          83.0800011754036,
+          83.76000076532364,
+          83.5999995470047,
+          81.7200019955635
+        ],
+        "median_us": 83.68000015616417,
+        "mean_us": 83.55076685547829,
+        "cv": 0.010183141221017464,
+        "p10_us": 82.35999941825867,
+        "p90_us": 84.63999629020691
+      },
+      "physical_m": 16,
+      "m1": {
+        "logical_m": 1,
+        "operations": 100663296,
+        "algorithmic_bytes": 25985024,
+        "operational_intensity_op_per_byte": 3.8738965952080706,
+        "measured_throughput_top_s": 1.202955255881232,
+        "algorithmic_bandwidth_gb_s": 310.5284889042373,
+        "bandwidth_roof_utilization": 0.4852007639128708
+      },
+      "m16": {
+        "logical_m": 16,
+        "operations": 1610612736,
+        "algorithmic_bytes": 25985024,
+        "operational_intensity_op_per_byte": 61.98234552332913,
+        "measured_throughput_top_s": 19.24728409409971,
+        "algorithmic_bandwidth_gb_s": 310.5284889042373,
+        "bandwidth_roof_utilization": 0.4852007639128708
+      }
+    },
+    "bf16_projection_15x16384x1024": {
+      "timing": {
+        "samples_us": [
+          188.23100626468658,
+          186.5600049495697,
+          183.36999416351318,
+          181.28100037574768,
+          179.5399934053421,
+          181.18999898433685,
+          178.3909946680069,
+          179.03999984264374,
+          185.3100061416626,
+          179.45000529289246,
+          180.0609976053238,
+          180.07999658584595,
+          172.72000014781952,
+          172.6910024881363,
+          170.9499955177307,
+          172.85999655723572,
+          172.3400056362152,
+          172.79000580310822,
+          171.7199981212616,
+          173.16000163555145,
+          168.91999542713165,
+          171.80100083351135,
+          172.95999825000763,
+          173.6000031232834,
+          172.29099571704865,
+          172.26000130176544,
+          172.28999733924866,
+          175.52000284194946,
+          173.15000295639038,
+          175.13999342918396
+        ],
+        "median_us": 173.38000237941742,
+        "mean_us": 176.32223318020502,
+        "cv": 0.029164310742602596,
+        "p10_us": 171.7199981212616,
+        "p90_us": 185.3100061416626
+      },
+      "point": {
+        "logical_m": 15,
+        "operations": 503316480,
+        "algorithmic_bytes": 34076672,
+        "operational_intensity_op_per_byte": 14.770118396538253,
+        "measured_throughput_top_s": 2.9029673151034086,
+        "algorithmic_bandwidth_gb_s": 196.54326642254892,
+        "bandwidth_roof_utilization": 0.30709885378523266
+      }
+    },
+    "rms_norm_quant_16x4096": {
+      "timing": {
+        "samples_us": [
+          21.84000052511692,
+          16.359999775886536,
+          16.359999775886536,
+          16.359999775886536,
+          16.359999775886536,
+          16.359999775886536,
+          16.599999740719795,
+          16.48000068962574,
+          16.3199994713068,
+          16.440000385046005,
+          16.359999775886536,
+          16.55999943614006,
+          16.359999775886536,
+          16.279999166727066,
+          16.359999775886536,
+          16.440000385046005,
+          16.599999740719795,
+          16.359999775886536,
+          16.3199994713068,
+          16.64000004529953,
+          16.40000008046627,
+          16.40000008046627,
+          16.440000385046005,
+          16.40000008046627,
+          16.440000385046005,
+          16.48000068962574,
+          16.359999775886536,
+          16.279999166727066,
+          16.55999943614006,
+          16.3199994713068
+        ],
+        "median_us": 16.379999928176403,
+        "mean_us": 16.594666553040344,
+        "cv": 0.05997784652664069,
+        "p10_us": 16.3199994713068,
+        "p90_us": 16.599999740719795
+      },
+      "algorithmic_bytes": 163872,
+      "algorithmic_bandwidth_gb_s": 10.004395648263229,
+      "roofline_point_omitted": "mixed reduction, FP and integer op semantics"
+    }
+  }
+}

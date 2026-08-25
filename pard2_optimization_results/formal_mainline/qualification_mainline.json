@@ -1,0 +1,97 @@
+{
+  "phase": 2,
+  "datasets": {
+    "humaneval": {
+      "pard2-ti": {
+        "exact_parity": true,
+        "median_speedup": 2.252064462675288,
+        "speedup_bootstrap_95_ci": [
+          2.1963386324705607,
+          2.3214408677397187
+        ],
+        "run_level_cv": 0.01249961920558738,
+        "peak_vram_bytes": 9257162752,
+        "vram_headroom": 0.7293919090431891,
+        "mean_accept_length": 5.959843843809706,
+        "hard_gate": true
+      },
+      "pard2-td": {
+        "exact_parity": true,
+        "median_speedup": 2.568647293092573,
+        "speedup_bootstrap_95_ci": [
+          2.4621568802148746,
+          2.638836438002996
+        ],
+        "run_level_cv": 0.015989604347757452,
+        "peak_vram_bytes": 9334618112,
+        "vram_headroom": 0.7271277112900012,
+        "mean_accept_length": 6.721285554606452,
+        "hard_gate": true,
+        "literature_speed_fraction": 0.3805403397174182,
+        "stretch_gate": false
+      }
+    },
+    "gsm8k": {
+      "pard2-ti": {
+        "exact_parity": true,
+        "median_speedup": 2.678213712523046,
+        "speedup_bootstrap_95_ci": [
+          2.424087661486536,
+          3.2001722596280016
+        ],
+        "run_level_cv": 0.04816017483122375,
+        "peak_vram_bytes": 8870092800,
+        "vram_headroom": 0.7407068511678518,
+        "mean_accept_length": 5.444653457660088,
+        "hard_gate": true
+      },
+      "pard2-td": {
+        "exact_parity": true,
+        "median_speedup": 3.2517626112299567,
+        "speedup_bootstrap_95_ci": [
+          3.0125873304107693,
+          3.8880868970222235
+        ],
+        "run_level_cv": 0.006102353933725034,
+        "peak_vram_bytes": 8859744768,
+        "vram_headroom": 0.7410093478679423,
+        "mean_accept_length": 6.36488115979768,
+        "hard_gate": true,
+        "literature_speed_fraction": 0.5049320824891237,
+        "stretch_gate": false
+      }
+    },
+    "math_500": {
+      "pard2-ti": {
+        "exact_parity": true,
+        "median_speedup": 2.039514635409743,
+        "speedup_bootstrap_95_ci": [
+          1.9027000305486321,
+          2.1185457453190906
+        ],
+        "run_level_cv": 0.007892427794066435,
+        "peak_vram_bytes": 9160067072,
+        "vram_headroom": 0.7322302383789541,
+        "mean_accept_length": 5.5547756115991636,
+        "hard_gate": true
+      },
+      "pard2-td": {
+        "exact_parity": true,
+        "median_speedup": 2.2547963204180803,
+        "speedup_bootstrap_95_ci": [
+          2.171777933676727,
+          2.563800863652736
+        ],
+        "run_level_cv": 0.00691878464674728,
+        "peak_vram_bytes": 9230735360,
+        "vram_headroom": 0.7301644423009135,
+        "mean_accept_length": 6.4967415666462305,
+        "hard_gate": true,
+        "stretch_gate": null
+      }
+    }
+  },
+  "all_exact_parity": true,
+  "hard_gate": true,
+  "td_stretch_gate": false
+}
