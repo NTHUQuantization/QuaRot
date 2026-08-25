@@ -22,67 +22,82 @@ python -m pip install -e third-party/hadacore --no-build-isolation -v
 python -m pip install -e . --no-build-isolation -v
 ```
 
-# benchmark example
+# Llama 3.1 8B example
 
-## synthetic benchmark
+The commands below use `meta-llama/Llama-3.1-8B` and write the converted
+checkpoint to `/models/quarot-llama-3.1-8b-gptq-int4`. Access to the gated
+Hugging Face model is required for conversion and for the FP16 reference runs.
 
-```bash
-python e2e/benchmark.py \
-      --batch_size 1 \
-      --prefill_seq_len 2048 \
-      --decode_steps 128 \
-      --int4_only
-```
-`--int4_only` is required to run CodeLlama-34b-hf.
-
-
-## Generate int4 checkpoint
+## Generate an INT4 checkpoint
 
 ### RTN
 ```bash
 python e2e/checkpoint_utils/quantize_checkpoint.py \
-  --model meta-llama/CodeLlama-34b-hf \
-  --output /models/quarot-codellama-34b-rtn-int4 \
+  --model meta-llama/Llama-3.1-8B \
+  --output /models/quarot-llama-3.1-8b-rtn-int4 \
   --rotation-device cuda \
   --rotation-dtype float32
 ```
 
 RTN is the default quantization method. It streams safetensors checkpoints one
 layer at a time. Each packed layer is written directly under `--output`; re-run
-the same command to resume from those completed shards. The dense FP16 model is
-never held in host RAM.
+the same command to resume from those completed shards.
 
 ### GPTQ
 ```bash
 python e2e/checkpoint_utils/quantize_checkpoint.py \
-  --model meta-llama/CodeLlama-34b-hf \
-  --tokenizer-model hf-internal-testing/llama-tokenizer \
-  --output /models/quarot-codellama-34b-gptq-int4 \
+  --model meta-llama/Llama-3.1-8B \
+  --output /models/quarot-llama-3.1-8b-gptq-int4 \
   --quant-method gptq \
   --cal-dataset wikitext2 \
   --nsamples 128
 ```
 
-## Real performance benchmark
+## INT4 decode benchmark
+
+Use the Fusion harness to sweep batch sizes and context lengths with the real
+converted checkpoint:
+
+```bash
+python e2e/benchmark_fusion_harness.py \
+  --model /models/quarot-llama-3.1-8b-gptq-int4 \
+  --batches 1 \
+  --context-lengths 128,1024,2048,4096 \
+  --decode-steps 16 \
+  --warmup 3 \
+  --repeats 5 \
+  --local-files-only \
+  --output /tmp/llama3_8b_fusion_benchmark.json
+```
+
+## Real INT4 versus FP16 benchmark
 
 ```bash
 python e2e/benchmark_real.py \
-  --int4-model /tmp/quarot-llama2-7b-rtn-int4 \
-  --fp16-model meta-llama/Llama-2-7b-hf \
+  --int4-model /models/quarot-llama-3.1-8b-gptq-int4 \
+  --fp16-model meta-llama/Llama-3.1-8B \
   --batch-size 1 \
-  --prefill-seq-len 2048 \
-  --decode-steps 128 \
-  --output /tmp/benchmark_real_llama2_7b_rtn.json
+  --prefill-seq-len 1024 \
+  --decode-steps 64 \
+  --output /tmp/benchmark_real_llama3_8b_gptq.json
 ```
+
+Add `--int4-only` when the FP16 reference does not fit in GPU memory. This
+still validates the packed checkpoint and fused dispatch, but it cannot report
+an INT4-to-FP16 speedup or numerical comparison.
 
 ## Accuracy benchmark
 
 ```bash
 python e2e/benchmark_accuracy.py \
-  --int4-model /tmp/quarot-llama2-7b-rtn-int4 \
-  --reference-model meta-llama/Llama-2-7b-hf \
-  --output /tmp/benchmark_accuracy_llama2_7b_rtn.json
-```    
+  --int4-model /models/quarot-llama-3.1-8b-gptq-int4 \
+  --reference-model meta-llama/Llama-3.1-8B \
+  --dataset wikitext2 \
+  --ppl-tokens 512 \
+  --ppl-chunk 128 \
+  --sequential-low-vram \
+  --output /tmp/benchmark_accuracy_llama3_8b_gptq.json
+```
 
 ## Star History
 

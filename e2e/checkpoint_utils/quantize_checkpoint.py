@@ -61,7 +61,9 @@ def finalize_output(output_path, model, config_cls, runtime_cls, output_type,
         "AutoConfig": f"quarot.{config_cls.__name__}",
         "AutoModelForCausalLM": f"quarot.{runtime_cls.__name__}"}
     saved_config["model_type"] = output_type
+    saved_config["tokenizer_name_or_path"] = model
     config_path.write_text(json.dumps(saved_config, indent=2) + "\n")
+    transformers.AutoTokenizer.from_pretrained(model).save_pretrained(output)
     source = Path(runtime_module.__file__)
     shutil.copy(source, output / "quarot.py")
     shutil.copy(Path(__file__).parents[1] / "quantized_common.py",

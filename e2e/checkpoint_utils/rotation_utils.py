@@ -4,6 +4,8 @@ import typing
 import transformers
 import tqdm, math
 from quarot.functional import random_hadamard_matrix, apply_exact_had_to_linear
+from quarot.functional.hadamard import (
+    grouped_ffn_physical_width, matmul_grouped_h256)
 
 def _to_compute(tensor, device, dtype):
     return tensor.to(device=device, dtype=dtype)
@@ -109,10 +111,41 @@ def rotate_mlp_output(layer, Q, device, compute_dtype):
     dtype = W.weight.data.dtype
     W.weight.data = _matmul_to_cpu(
         Q.T, W.weight.data, dtype, device, compute_dtype)
-    apply_exact_had_to_linear(W, had_dim=-1, output=False) #apply exact (inverse) hadamard on the weights of mlp output
+    pad_mlp_grouped_h256(layer, device, compute_dtype)
     if W.bias is not None:
         W.bias.data = _matmul_to_cpu(
             Q.T, W.bias.data, dtype, device, compute_dtype)
+
+
+def pad_mlp_modules(layer):
+    """Resize dense FFN modules to the universal physical H256 width."""
+    up, gate, down = (layer.mlp.up_proj, layer.mlp.gate_proj,
+                      layer.mlp.down_proj)
+    logical = up.out_features
+    physical = grouped_ffn_physical_width(logical)
+    if physical != logical:
+        pad_rows = physical - logical
+        for module in (up, gate):
+            module.weight.data = torch.nn.functional.pad(
+                module.weight.data, (0, 0, 0, pad_rows))
+            if module.bias is not None:
+                module.bias.data = torch.nn.functional.pad(
+                    module.bias.data, (0, pad_rows))
+            module.out_features = physical
+        down.weight.data = torch.nn.functional.pad(
+            down.weight.data, (0, pad_rows))
+        down.in_features = physical
+    return physical
+
+
+def pad_mlp_grouped_h256(layer, device="cpu", compute_dtype=torch.float64):
+    """Pad an FFN and fold block-diagonal normalized H256 into down_proj."""
+    pad_mlp_modules(layer)
+    down = layer.mlp.down_proj
+    down_dtype = down.weight.dtype
+    down.weight.data = matmul_grouped_h256(
+        down.weight.data.to(device=device, dtype=compute_dtype)).to(
+            device="cpu", dtype=down_dtype)
 
 def rotate_head(model, Q: torch.Tensor, device, compute_dtype) -> None:
     # Rotate the head.

@@ -1,4 +1,5 @@
 import math
+import os
 import torch
 import quarot
 import fast_hadamard_transform
@@ -73,13 +74,69 @@ class Linear4bit(torch.nn.Module):
         #shape_handler = ShapeHandler(quantized_x)
         #quantized_x = shape_handler.flatten(quantized_x)
         self._prepack_weight()
-        x = quarot.matmul_bpre(x, self.weight, self.out_features, self.in_features)
-        #out = shape_handler.unflatten(
-        #    quarot.sym_dequant(int_result, scales_x, self.weight_scales))
-        if self.bias is not None:
-            return quarot.sym_dequant(x, scales_x, self.weight_scales) + self.bias
-        else:
-            return quarot.sym_dequant(x, scales_x, self.weight_scales)
+        # The grouped-scale GEMM is also the canonical one-scale GEMM. It
+        # writes FP16 directly, avoiding an M=1 -> M=16 pad, an INT32 output
+        # allocation, and a second dequantization kernel during decode.
+        output = quarot.matmul_bpre_grouped_scale(
+            x, self.weight, scales_x, self.weight_scales,
+            self.out_features, self.in_features)
+        return output + self.bias if self.bias is not None else output
+
+    @staticmethod
+    def fused_forward(x, *projections):
+        """Project one packed activation through two or three INT4 weights."""
+        if len(projections) not in (2, 3):
+            raise ValueError("fused_forward requires two or three projections")
+        for projection in projections:
+            projection._prepack_weight()
+        if (os.getenv("QUAROT_INTERLEAVED_PROJECTIONS", "1") != "0" and
+                not all(getattr(projection, "_interleaved_fused", False)
+                   for projection in projections)):
+            weight_sizes = [projection.weight.numel()
+                            for projection in projections]
+            scale_sizes = [projection.weight_scales.numel()
+                           for projection in projections]
+            combined_weight = torch.cat(
+                [projection.weight.reshape(-1) for projection in projections])
+            combined_scales = torch.cat(
+                [projection.weight_scales.reshape(-1)
+                 for projection in projections])
+            weight_offset = 0
+            scale_offset = 0
+            for projection, weight_size, scale_size in zip(
+                    projections, weight_sizes, scale_sizes):
+                projection.weight = combined_weight[
+                    weight_offset:weight_offset + weight_size].view_as(
+                        projection.weight)
+                projection.weight_scales = combined_scales[
+                    scale_offset:scale_offset + scale_size].view_as(
+                        projection.weight_scales)
+                projection._interleaved_fused = True
+                weight_offset += weight_size
+                scale_offset += scale_size
+        packed, scales = x.quantized_x, x.scales_x
+        shape = packed.shape[:-1]
+        packed = packed.view(-1, packed.shape[-1]).contiguous()
+        scales = scales.view(packed.shape[0], -1)
+        if scales.shape[1] != 1:
+            # The shared-input kernel accumulates once across K. Group-scaled
+            # H256 down projections continue through the regular grouped path.
+            return tuple(projection(x) for projection in projections)
+        p0, p1 = projections[:2]
+        p2 = projections[2] if len(projections) == 3 else None
+        output = quarot._HIP.matmul_bpre_multi_scale(
+            packed, scales.contiguous(),
+            p0.weight.contiguous(), p0.weight_scales.view(-1).contiguous(),
+            p1.weight.contiguous(), p1.weight_scales.view(-1).contiguous(),
+            None if p2 is None else p2.weight.contiguous(),
+            None if p2 is None else p2.weight_scales.view(-1).contiguous(),
+            p0.out_features, p1.out_features,
+            0 if p2 is None else p2.out_features, p0.in_features)
+        widths = [p.out_features for p in projections]
+        chunks = tuple(chunk.view(*shape, width) for chunk, width in
+                       zip(output.split(widths, dim=-1), widths))
+        return tuple(chunk if projection.bias is None else chunk + projection.bias
+                     for chunk, projection in zip(chunks, projections))
 
     @staticmethod
     def from_float(module: torch.nn.Linear, weight_scales=None,):

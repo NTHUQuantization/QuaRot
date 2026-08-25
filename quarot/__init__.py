@@ -61,6 +61,16 @@ def matmul_bpre(A, B, out_features, in_features):
     return result[:original_m].view(*A_shape_excl_last, out_features)
 
 
+def matmul_bpre_grouped_scale(A, B, scales, weight_scales,
+                              out_features, in_features):
+    A, A_shape_excl_last = flatten_last_dim_and_return_shape(A)
+    scales = scales.view(A.shape[0], -1)
+    result = _HIP.matmul_bpre_grouped_scale(
+        A.contiguous(), B.contiguous(), scales.contiguous(),
+        weight_scales.view(-1).contiguous(), out_features, in_features)
+    return result.view(*A_shape_excl_last, out_features)
+
+
 def sym_quant(x, scale):
     assert x.dtype == scale.dtype == torch.float16
     x, x_shape_excl_last = flatten_last_dim_and_return_shape(x)

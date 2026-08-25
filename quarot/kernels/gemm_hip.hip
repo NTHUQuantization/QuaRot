@@ -240,6 +240,159 @@ __global__ void bpre_kernel(const Int4Storage* __restrict__ A,
 #endif
 }
 
+// One wave computes a 16x16 output tile. Integer WMMA accumulation is closed
+// every 256 K elements so the corresponding activation-group scale can be
+// applied before partial sums from different groups are combined.
+template <uint32_t BlockMWaves, uint32_t BlockNWaves>
+__global__ void bpre_grouped_scale_kernel(
+    const Int4Storage* __restrict__ A,
+    const Int4Storage* __restrict__ BPre,
+    const half* __restrict__ scale_group,
+    const half* __restrict__ scale_weight,
+    half* __restrict__ C,
+    uint32_t M,
+    uint32_t N,
+    uint32_t K,
+    uint32_t scale_groups)
+{
+#if defined(QUAROT_BPRE_GFX12)
+    const uint32_t wave = threadIdx.x >> 5u;
+    const uint32_t lane = threadIdx.x & 31u;
+    const uint32_t wave_m = wave / BlockNWaves;
+    const uint32_t wave_n = wave - wave_m * BlockNWaves;
+    const uint32_t lane16 = lane & 15u;
+    const uint32_t row_blk = lane >> 4u;
+    const uint32_t row_base = (blockIdx.y * BlockMWaves + wave_m) * 16u;
+    const uint32_t n_tile = blockIdx.x * BlockNWaves + wave_n;
+    const uint32_t col = n_tile * 16u + lane16;
+    const uint32_t k_bytes = K / 2u;
+    const uint32_t k_groups = K / kWmmaK;
+    const uint32_t wmmas_per_scale = k_groups / scale_groups;
+    float output[8] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+    const I32x8 zero = {0, 0, 0, 0, 0, 0, 0, 0};
+
+    for(uint32_t sg = 0; sg < scale_groups; ++sg)
+    {
+        I32x8 acc = zero;
+#pragma unroll
+        for(uint32_t sub = 0; sub < wmmas_per_scale; ++sub)
+        {
+            const uint32_t kg = sg * wmmas_per_scale + sub;
+            const uint32_t byte_k = (kg * kWmmaK + row_blk * kLaneK) / 2u;
+            I32x2 b_frag = {0, 0};
+            if(col < N)
+                b_frag = load_pre_i4x16_as_i32x2(
+                    BPre, n_tile, kg, row_blk, lane16, k_groups);
+            const uint32_t a_row = row_base + lane16;
+            I32x2 a_frag = {0, 0};
+            if(a_row < M)
+                a_frag = load_row_i4x16_as_i32x2(
+                    A + static_cast<size_t>(a_row) * k_bytes + byte_k);
+            acc = __builtin_amdgcn_wmma_i32_16x16x32_iu4_w32_gfx12(
+                true, a_frag, true, b_frag, acc, false);
+        }
+#pragma unroll
+        for(uint32_t i = 0; i < 8u; ++i)
+        {
+            const uint32_t row = row_base + row_blk * 8u + i;
+            if(row < M)
+                output[i] += static_cast<float>(acc[i]) *
+                             __half2float(scale_group[static_cast<size_t>(row) *
+                                                      scale_groups + sg]);
+        }
+    }
+
+    if(col < N)
+    {
+        const float ws = __half2float(scale_weight[col]);
+#pragma unroll
+        for(uint32_t i = 0; i < 8u; ++i)
+        {
+            const uint32_t row = row_base + row_blk * 8u + i;
+            if(row < M)
+                C[static_cast<size_t>(row) * N + col] = __float2half(output[i] * ws);
+        }
+    }
+#endif
+}
+
+// Shared-input decode projection. One launch covers two or three independently
+// scaled weight matrices and writes a contiguous [B0 | B1 | B2] result. All
+// supported model widths are 16-column aligned, so a WMMA tile never straddles
+// two matrices.
+__global__ void bpre_multi_scale_kernel(
+    const Int4Storage* __restrict__ A,
+    const Int4Storage* __restrict__ B0,
+    const Int4Storage* __restrict__ B1,
+    const Int4Storage* __restrict__ B2,
+    const half* __restrict__ scale_activation,
+    const half* __restrict__ scale_weight0,
+    const half* __restrict__ scale_weight1,
+    const half* __restrict__ scale_weight2,
+    half* __restrict__ C,
+    uint32_t M, uint32_t N0, uint32_t N1, uint32_t N2, uint32_t K,
+    bool allow_interleaved)
+{
+#if defined(QUAROT_BPRE_GFX12)
+    const uint32_t lane = threadIdx.x & 31u;
+    const uint32_t lane16 = lane & 15u;
+    const uint32_t row_blk = lane >> 4u;
+    const uint32_t global_tile = blockIdx.x;
+    const uint32_t global_col = global_tile * 16u + lane16;
+    const uint32_t total_n = N0 + N1 + N2;
+    if(global_col >= total_n) return;
+
+    const Int4Storage* B;
+    const half* scale_weight;
+    uint32_t local_col;
+    uint32_t local_tile;
+    const size_t matrix_stride = static_cast<size_t>(K) / 2u;
+    const bool interleaved = allow_interleaved &&
+        B1 == B0 + static_cast<size_t>(N0) * matrix_stride &&
+        scale_weight1 == scale_weight0 + N0 &&
+        (N2 == 0 ||
+         (B2 == B1 + static_cast<size_t>(N1) * matrix_stride &&
+          scale_weight2 == scale_weight1 + N1));
+    if(interleaved) {
+        B = B0; scale_weight = scale_weight0; local_col = global_col;
+        local_tile = global_tile;
+    } else if(global_col < N0) {
+        B = B0; scale_weight = scale_weight0; local_col = global_col;
+        local_tile = global_tile;
+    } else if(global_col < N0 + N1) {
+        B = B1; scale_weight = scale_weight1; local_col = global_col - N0;
+        local_tile = local_col / 16u;
+    } else {
+        B = B2; scale_weight = scale_weight2; local_col = global_col - N0 - N1;
+        local_tile = local_col / 16u;
+    }
+
+    const uint32_t row_base = blockIdx.y * 16u;
+    const uint32_t k_bytes = K / 2u;
+    const uint32_t k_groups = K / kWmmaK;
+    const uint32_t a_row = row_base + lane16;
+    I32x8 acc = {0, 0, 0, 0, 0, 0, 0, 0};
+    for(uint32_t kg = 0; kg < k_groups; ++kg) {
+        const uint32_t byte_k = (kg * kWmmaK + row_blk * kLaneK) / 2u;
+        const I32x2 b_frag = load_pre_i4x16_as_i32x2(
+            B, local_tile, kg, row_blk, lane16, k_groups);
+        I32x2 a_frag = {0, 0};
+        if(a_row < M)
+            a_frag = load_row_i4x16_as_i32x2(
+                A + static_cast<size_t>(a_row) * k_bytes + byte_k);
+        acc = __builtin_amdgcn_wmma_i32_16x16x32_iu4_w32_gfx12(
+            true, a_frag, true, b_frag, acc, false);
+    }
+    const float ws = __half2float(scale_weight[local_col]);
+    for(uint32_t i = 0; i < 8u; ++i) {
+        const uint32_t row = row_base + row_blk * 8u + i;
+        if(row < M)
+            C[static_cast<size_t>(row) * total_n + global_col] = __float2half(
+                static_cast<float>(acc[i]) * __half2float(scale_activation[row]) * ws);
+    }
+#endif
+}
+
 template <uint32_t BlockMWaves,
           uint32_t BlockNWaves,
           uint32_t MTilesPerWave,
@@ -960,6 +1113,84 @@ void matmul_bpre_host(const Int4Storage* A,
     }
 
     dispatch_matmul_bpre_only(A, BPre, M, N, K, C);
+#endif
+}
+
+void matmul_bpre_grouped_scale_host(const Int4Storage* A,
+                                    const Int4Storage* BPre,
+                                    const half* scale_group,
+                                    const half* scale_weight,
+                                    uint32_t M,
+                                    uint32_t N,
+                                    uint32_t K,
+                                    half* C,
+                                    uint32_t scale_groups)
+{
+#if !defined(QUAROT_BPRE_GFX12)
+    throw std::runtime_error("grouped-scale GEMM requires gfx12/gfx1201 WMMA int4 support");
+#else
+    if(A == nullptr || BPre == nullptr || scale_group == nullptr ||
+       scale_weight == nullptr || C == nullptr)
+        throw std::invalid_argument("grouped-scale GEMM received a null device pointer");
+    if(scale_groups == 0 || K % scale_groups != 0 ||
+       ((K / scale_groups) % kWmmaK) != 0)
+        throw std::invalid_argument("invalid grouped-scale GEMM scale layout");
+    if(M >= 512u)
+    {
+        const dim3 block(128u);
+        const dim3 grid((N + 31u) / 32u, (M + 31u) / 32u);
+       hipLaunchKernelGGL(( bpre_grouped_scale_kernel<2, 2>), dim3(grid), dim3(block), 0, 0, 
+            A, BPre, scale_group, scale_weight, C, M, N, K, scale_groups);
+    }
+    else if(M <= 16u)
+    {
+        const dim3 block(128u);
+        const dim3 grid((N + 63u) / 64u, (M + 15u) / 16u);
+       hipLaunchKernelGGL(( bpre_grouped_scale_kernel<1, 4>), dim3(grid), dim3(block), 0, 0, 
+            A, BPre, scale_group, scale_weight, C, M, N, K, scale_groups);
+    }
+    else
+    {
+        const dim3 block(32u);
+        const dim3 grid((N + 15u) / 16u, (M + 15u) / 16u);
+       hipLaunchKernelGGL(( bpre_grouped_scale_kernel<1, 1>), dim3(grid), dim3(block), 0, 0, 
+            A, BPre, scale_group, scale_weight, C, M, N, K, scale_groups);
+    }
+    check_hip(hipGetLastError(), "bpre_grouped_scale_kernel launch");
+#endif
+}
+
+void matmul_bpre_multi_scale_host(const Int4Storage* A,
+                                  const Int4Storage* B0,
+                                  const Int4Storage* B1,
+                                  const Int4Storage* B2,
+                                  const half* scale_activation,
+                                  const half* scale_weight0,
+                                  const half* scale_weight1,
+                                  const half* scale_weight2,
+                                  uint32_t M, uint32_t N0, uint32_t N1,
+                                  uint32_t N2, uint32_t K, half* C)
+{
+#if !defined(QUAROT_BPRE_GFX12)
+    throw std::runtime_error("multi-scale GEMM requires gfx12/gfx1201 WMMA int4 support");
+#else
+    if(A == nullptr || B0 == nullptr || B1 == nullptr ||
+       scale_activation == nullptr || scale_weight0 == nullptr ||
+       scale_weight1 == nullptr || C == nullptr ||
+       (N2 != 0 && (B2 == nullptr || scale_weight2 == nullptr)))
+        throw std::invalid_argument("multi-scale GEMM received a null device pointer");
+    if((N0 % 16u) || (N1 % 16u) || (N2 % 16u) || (K % kWmmaK))
+        throw std::invalid_argument("multi-scale GEMM dimensions must be WMMA aligned");
+            const dim3 block(32u);
+        const dim3 grid((N0 + N1 + N2) / 16u, (M + 15u) / 16u);
+        const char* interleaved_env = std::getenv(
+            "QUAROT_INTERLEAVED_PROJECTIONS");
+        const bool allow_interleaved = interleaved_env == nullptr ||
+            std::strcmp(interleaved_env, "0") != 0;
+       hipLaunchKernelGGL(( bpre_multi_scale_kernel), dim3(grid), dim3(block), 0, 0, 
+            A, B0, B1, B2, scale_activation, scale_weight0, scale_weight1,
+            scale_weight2, C, M, N0, N1, N2, K, allow_interleaved);
+    check_hip(hipGetLastError(), "bpre_multi_scale_kernel launch");
 #endif
 }
 

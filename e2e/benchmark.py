@@ -15,12 +15,12 @@ import torch
 import transformers
 
 model_configs = [
-    "meta-llama/Llama-2-7b-hf",
+    # "meta-llama/Llama-2-7b-hf",
     # "meta-llama/Llama-2-13b-hf",
     # "meta-llama/CodeLlama-34b-hf",
     # "Qwen/Qwen3-32B",
     # "Qwen/Qwen2.5-32B",
-    # "meta-llama/Llama-3.1-8B",
+    "meta-llama/Llama-3.1-8B",
 ]
 
 benchmark_dtypes = ["int4", torch.float16]

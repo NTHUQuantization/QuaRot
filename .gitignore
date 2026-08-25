@@ -12,3 +12,5 @@ CMakeFiles/*
 CMakeCache.txt
 *.egg
 Makefile
+docs/*
+scripts/*

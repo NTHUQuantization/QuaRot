@@ -43,7 +43,6 @@ def main(args):
 
     old_dict = model.state_dict()
     key_maps = {
-        "mlp.down_proj": "mlp.down_proj.2",
         "self_attn.o_proj": "self_attn.o_proj.1"
     }
     bad_key_names = {

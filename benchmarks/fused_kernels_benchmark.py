@@ -40,9 +40,10 @@ def attention_reference(attention):
 
 
 def ffn_reference(gate, up):
-    value = hadamard_reference(torch.nn.functional.silu(gate) * up)
-    scale = (value.abs().amax(dim=-1, keepdim=True) / 7).half()
-    return torch.round(value / scale).clamp(-8, 7).to(torch.int8)
+    value = torch.nn.functional.silu(gate) * up
+    value = hadamard_reference(value.reshape(*value.shape[:-1], -1, 256)).reshape_as(value)
+    scale = (value.reshape(*value.shape[:-1], -1, 256).abs().amax(-1) / 7).half()
+    return torch.round(value / scale.repeat_interleave(256, -1)).clamp(-8, 7).to(torch.int8)
 
 
 def main():
@@ -61,7 +62,9 @@ def main():
     timed("reference attention output", lambda: attention_reference(attention), args.iterations)
     timed("fused attention output (Hadamard + INT4)", lambda: _HIP.fused_attention_hadamard_quant(attention, args.heads), args.iterations)
     timed("reference FFN", lambda: ffn_reference(gate, up), args.iterations)
-    timed("fused FFN (SiLU*up + Hadamard + INT4)", lambda: _HIP.fused_ffn_silu_hadamard_quant(gate, up), args.iterations)
+    timed("fused FFN (SiLU*up + grouped H256 + per-group INT4)",
+          lambda: _HIP.fused_ffn_silu_hadamard_quant(gate, up),
+          args.iterations)
 
 
 if __name__ == "__main__":

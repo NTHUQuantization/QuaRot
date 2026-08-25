@@ -7,6 +7,8 @@ class Quantizer(torch.nn.Module):
         self.input_clip_ratio = input_clip_ratio
     
     def forward(self, x):
+        if isinstance(x, quarot.PackedQuantizedTensor):
+            return x
         scales_x = (
             x.abs().amax(dim=-1, keepdim=True).div(7)
             * self.input_clip_ratio

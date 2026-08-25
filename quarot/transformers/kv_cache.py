@@ -4,6 +4,7 @@ import math
 import torch
 from .. import _HIP
 import functools
+import os
 from quarot.functional.quantization import get_minq_maxq
 
 @torch.jit.script
@@ -69,16 +70,6 @@ def append_kv_i4(kv_data, kv_param,
         layer_idx)
 
 
-def fused_append_kv_i4(kv_data, kv_param,
-                       kv_indptr, kv_indices,
-                       last_page_offset, k, v,
-                       num_layers, layer_idx, num_heads,
-                       page_size, batch_size):
-    """Decode-only K/V path matching this package's asymmetric FlashInfer cache."""
-    return _HIP.fused_append_kv_i4(
-        kv_data, kv_param, kv_indptr, kv_indices, last_page_offset, k, v,
-        num_layers, layer_idx, num_heads, page_size, batch_size)
-
 def batch_decode_i4(o, q, kv_data, kv_param,
                kv_indptr, kv_indices,
                last_page_offset, layer_idx):
@@ -134,14 +125,14 @@ class _AttentionStub(object):
         assert q_len == 1
         q = q.view(batch_size, num_qo_heads, head_dim)
         if self.hadamard_dtype is not None:
-            q = matmul_had_HIP(q, dtype=self.hadamard_dtype) 
+            q = matmul_had_HIP(q, dtype=self.hadamard_dtype)
         attn_output = torch.empty_like(q)
         if self.disable_quant:
             batch_decode = batch_decode_f16
         else:
             batch_decode = batch_decode_i4
         batch_decode(
-            attn_output, q, 
+            attn_output, q,
             **attention_kwargs, layer_idx=layer_idx
         )
         attn_output = attn_output.unsqueeze(1)
@@ -150,7 +141,7 @@ class _AttentionStub(object):
 
 class MultiLayerPagedKVCache4Bit(Cache):
     def __init__(
-        self, batch_size, page_size, max_seq_len, 
+        self, batch_size, page_size, max_seq_len,
         device, n_layers, num_heads, head_dim,
         num_kv_heads=None,
         disable_quant=False, hadamard_dtype=torch.float16 ):
@@ -171,15 +162,15 @@ class MultiLayerPagedKVCache4Bit(Cache):
         self.disable_quant = disable_quant
         self.pages = torch.empty(
             (
-                max_page_cnt * batch_size, 
-                n_layers, 
-                2, 
+                max_page_cnt * batch_size,
+                n_layers,
+                2,
                 self.cache_heads,
-                page_size, 
-                head_dim if disable_quant else head_dim // 2 
-            ), 
+                page_size,
+                head_dim if disable_quant else head_dim // 2
+            ),
             dtype=torch.float16 if disable_quant else torch.uint8, device=device)
-        
+
         self.scales = torch.empty((max_page_cnt * batch_size, n_layers, 2, self.cache_heads, page_size, 2), dtype=torch.float16, device=device)
         self.page_size = page_size
         self.max_seq_len = max_seq_len
@@ -187,9 +178,32 @@ class MultiLayerPagedKVCache4Bit(Cache):
         self.length = 0
         self.device = device
         self.hadamard_dtype = hadamard_dtype
+        # Decode uses equal sequence lengths across the batch.  Materialize
+        # every possible metadata row once so selecting the current row is a
+        # view operation, rather than launching arange/remainder/where kernels
+        # for every decoder layer.
+        self._persistent_metadata_enabled = (
+            os.getenv("QUAROT_PERSISTENT_KV_METADATA", "1") != "0")
+        self._cuda_graph_decode = False
+        if self._persistent_metadata_enabled:
+            lengths = torch.arange(
+                max_seq_len + 1, device=device, dtype=torch.int32)
+            page_counts = torch.div(
+                lengths + page_size - 1, page_size, rounding_mode="floor")
+            batch_offsets = torch.arange(
+                batch_size + 1, device=device, dtype=torch.int32)
+            self._decode_kv_indptr = (
+                page_counts[:, None] * batch_offsets[None, :])
+            self._decode_kv_indices = torch.arange(
+                max_page_cnt * batch_size, device=device, dtype=torch.int32)
+            page_offsets = lengths.remainder(page_size)
+            page_offsets = torch.where(
+                (lengths != 0) & (page_offsets == 0), page_size, page_offsets)
+            self._decode_last_page_offset = page_offsets[:, None].repeat(
+                1, batch_size)
         self._stub = _AttentionStub(
-            self.page_size, device, n_layers, 
-            disable_quant=self.disable_quant, 
+            self.page_size, device, n_layers,
+            disable_quant=self.disable_quant,
             hadamard_dtype=self.hadamard_dtype)
 
     def page_cnt_from_length(self, length):
@@ -198,7 +212,7 @@ class MultiLayerPagedKVCache4Bit(Cache):
     @property
     def batch_size(self):
         return self._batch_size
-    
+
     def _ensure_page_cnt_per_batch(self, expected_page_cnt_per_batch):
         expected_page_cnt = expected_page_cnt_per_batch * self.batch_size
         if expected_page_cnt <= self.pages.shape[0]:
@@ -208,7 +222,7 @@ class MultiLayerPagedKVCache4Bit(Cache):
     @property
     def seen_tokens(self):
         return self.length
-        
+
     def update(
         self,
         key_states: torch.Tensor,
@@ -216,7 +230,7 @@ class MultiLayerPagedKVCache4Bit(Cache):
         layer_idx: int,
         cache_kwargs: Optional[Dict[str, Any]] = None,
     ):
-        
+
         b_sz, added_length, num_heads, head_dim = key_states.shape
         if num_heads != self.num_kv_heads:
             raise ValueError("KV tensor head count does not match cache configuration")
@@ -224,29 +238,29 @@ class MultiLayerPagedKVCache4Bit(Cache):
         orig_key_states = key_states
         orig_value_states = value_states
 
-        use_fused_append = (
-            not self.disable_quant and not self._needs_init[layer_idx] and added_length == 1
-        )
+        if self.hadamard_dtype is not None:
+            key_states = matmul_had_HIP(
+                key_states, dtype=self.hadamard_dtype)
 
-        if not use_fused_append and self.hadamard_dtype is not None:
-            key_states = matmul_had_HIP(key_states, dtype=self.hadamard_dtype)
-
-        if use_fused_append:
-            # The HIP kernel applies the exact head-wise Hadamard, target-cache
-            # asymmetric quantization, and writes directly to the selected page.
-            pass
-        elif self.disable_quant:
-            k_scale = key_states.new_ones((b_sz, added_length, num_heads, 1))
-            k_zero = key_states.new_zeros((b_sz, added_length, num_heads, 1))
-            v_scale = value_states.new_ones((b_sz, added_length, num_heads, 1))
-            v_zero = value_states.new_zeros((b_sz, added_length, num_heads, 1))
+        if self.disable_quant:
+            k_scale = key_states.new_ones(
+                (b_sz, added_length, num_heads, 1))
+            k_zero = key_states.new_zeros(
+                (b_sz, added_length, num_heads, 1))
+            v_scale = value_states.new_ones(
+                (b_sz, added_length, num_heads, 1))
+            v_zero = value_states.new_zeros(
+                (b_sz, added_length, num_heads, 1))
         else:
-            key_states, k_scale, k_zero = asym_quantize_and_pack_i4(key_states)
-            value_states, v_scale, v_zero = asym_quantize_and_pack_i4(value_states)
-        
-        if not use_fused_append:
-            k_param = torch.cat([k_scale, k_zero], dim=-1).view(self.batch_size * added_length, num_heads, 2)
-            v_param = torch.cat([v_scale, v_zero], dim=-1).view(self.batch_size * added_length, num_heads, 2)
+            key_states, k_scale, k_zero = asym_quantize_and_pack_i4(
+                key_states)
+            value_states, v_scale, v_zero = asym_quantize_and_pack_i4(
+                value_states)
+
+        k_param = torch.cat([k_scale, k_zero], dim=-1).view(
+            self.batch_size * added_length, num_heads, 2)
+        v_param = torch.cat([v_scale, v_zero], dim=-1).view(
+            self.batch_size * added_length, num_heads, 2)
 
         quantized_head_dim = self.pages.shape[-1]
 
@@ -278,9 +292,9 @@ class MultiLayerPagedKVCache4Bit(Cache):
             init_kv = init_kv_f16 if self.disable_quant else init_kv_i4
             init_kv(
                 **self.get_cache_specs_for_flash_infer(attention_mask),
-                k=key_states.view(-1, num_heads, quantized_head_dim), 
-                v=value_states.view(-1, num_heads, quantized_head_dim), 
-                k_param=k_param.view(-1, num_heads, 2), 
+                k=key_states.view(-1, num_heads, quantized_head_dim),
+                v=value_states.view(-1, num_heads, quantized_head_dim),
+                k_param=k_param.view(-1, num_heads, 2),
                 v_param=v_param.view(-1, num_heads, 2),
                 seqlen_indptr=seqlens_in_batch,
                 layer_idx=layer_idx
@@ -289,35 +303,73 @@ class MultiLayerPagedKVCache4Bit(Cache):
         else:
             assert added_length == 1
             specs = self.get_cache_specs_for_flash_infer(attention_mask)
-            if use_fused_append:
-                fused_append_kv_i4(
-                    **specs, k=key_states.view(self.batch_size, num_heads, head_dim),
-                    v=value_states.view(self.batch_size, num_heads, head_dim),
-                    num_layers=self.n_layers, layer_idx=layer_idx, num_heads=num_heads,
-                    page_size=self.page_size, batch_size=self.batch_size,
-                )
-            else:
-                append_kv = append_kv_f16 if self.disable_quant else append_kv_i4
-                append_kv(
-                    **specs,
-                    k=key_states.view(self.batch_size, num_heads, quantized_head_dim),
-                    v=value_states.view(self.batch_size, num_heads, quantized_head_dim),
-                    k_param=k_param.view(-1, num_heads, 2),
-                    v_param=v_param.view(-1, num_heads, 2),
-                    layer_idx=layer_idx,
-                )
+            append_kv = append_kv_f16 if self.disable_quant else append_kv_i4
+            append_kv(
+                **specs,
+                k=key_states.view(
+                    self.batch_size, num_heads, quantized_head_dim),
+                v=value_states.view(
+                    self.batch_size, num_heads, quantized_head_dim),
+                k_param=k_param.view(-1, num_heads, 2),
+                v_param=v_param.view(-1, num_heads, 2),
+                layer_idx=layer_idx,
+            )
         return functools.partial(
-            self._stub.forward, 
+            self._stub.forward,
             num_kv_heads=num_heads,
             attention_kwargs=self.get_cache_specs_for_flash_infer(attention_mask),
-            layer_idx=layer_idx, 
+            layer_idx=layer_idx,
         )
-    
+
+    def can_fuse_k1(self, layer_idx, attention_mask):
+        return (
+            attention_mask is None and
+            not self.disable_quant and
+            not self._needs_init[layer_idx])
+
+    def update_fused_k1(
+            self, query_states, key_states, value_states, cos, sin, layer_idx):
+        """Decode-only Q/K RoPE plus direct INT4 paged-cache append."""
+        batch, added_length, kv_heads, head_dim = key_states.shape
+        if (added_length != 1 or batch != self.batch_size or
+                kv_heads != self.num_kv_heads):
+            raise ValueError("K1 requires one decode token and physical KV heads")
+        if layer_idx == 0:
+            new_length = self.length + 1
+            self._ensure_page_cnt_per_batch(
+                self.page_cnt_from_length(new_length))
+            self.length = new_length
+        specs = self.get_cache_specs_for_flash_infer(None)
+        query_out = _HIP.fused_rope_append_kv_i4(
+            query_states.contiguous(), key_states.contiguous(),
+            value_states.contiguous(), cos.contiguous(), sin.contiguous(),
+            specs["kv_data"], specs["kv_param"], specs["kv_indptr"],
+            specs["kv_indices"], specs["last_page_offset"],
+            self.n_layers, layer_idx, self.page_size)
+        attention = functools.partial(
+            self._stub.forward, num_kv_heads=kv_heads,
+            attention_kwargs=specs, layer_idx=layer_idx)
+        return query_out, attention
+
     def get_cache_specs_for_flash_infer(self, attention_mask):
+        if attention_mask is None and self._cuda_graph_decode:
+            return self._cuda_graph_specs
+        if attention_mask is None and self._persistent_metadata_enabled:
+            page_cnt = self.page_cnt_from_length(self.length)
+            return {
+                "kv_data": self.pages,
+                "kv_indptr": self._decode_kv_indptr[self.length],
+                "kv_indices": self._decode_kv_indices[
+                    :page_cnt * self.batch_size],
+                "last_page_offset": self._decode_last_page_offset[self.length],
+                "kv_param": self.scales,
+            }
         if attention_mask is not None:
             seqlens_in_batch = attention_mask.sum(dim=-1, dtype=torch.int32)
         else:
-            seqlens_in_batch = torch.tensor([self.length], dtype=torch.int32, device=self.device).expand(self.batch_size)
+            seqlens_in_batch = torch.tensor(
+                [self.length], dtype=torch.int32,
+                device=self.device).expand(self.batch_size)
         page_cnt = self.page_cnt_from_length(seqlens_in_batch)
         if (page_cnt[0] != page_cnt).any():
             raise NotImplementedError("Current implementation does not support the case where batches have different number of pages")
@@ -326,13 +378,34 @@ class MultiLayerPagedKVCache4Bit(Cache):
         page_ptr = torch.where((seqlens_in_batch != 0) & (page_ptr == 0), self.page_size, page_ptr)
         return {
             f"kv_data": self.pages,
-            f"kv_indptr": torch.arange(0, self.batch_size + 1, device=self.device, dtype=torch.int) * page_cnt, 
+            f"kv_indptr": torch.arange(0, self.batch_size + 1, device=self.device, dtype=torch.int) * page_cnt,
             f"kv_indices": (
-                (torch.arange(page_cnt, device=self.device, dtype=torch.int) * self.batch_size).unsqueeze(0) + 
-                torch.arange(self.batch_size, device=self.device, dtype=torch.int).unsqueeze(1)).view(-1), 
+                (torch.arange(page_cnt, device=self.device, dtype=torch.int) * self.batch_size).unsqueeze(0) +
+                torch.arange(self.batch_size, device=self.device, dtype=torch.int).unsqueeze(1)).view(-1),
             f"last_page_offset": page_ptr, #torch.full((self.batch_size, ), page_ptr, device=self.device, dtype=torch.int),
-            f"kv_param": self.scales, 
+            f"kv_param": self.scales,
         }
+
+    def enable_cuda_graph_decode(self):
+        """Freeze metadata addresses while allowing graph replay to advance."""
+        if self.page_cnt_from_length(self.max_seq_len) != 1:
+            raise NotImplementedError(
+                "graph decode currently requires a single cache page")
+        next_length = self.length + 1
+        self._cuda_graph_specs = {
+            "kv_data": self.pages,
+            "kv_indptr": self._decode_kv_indptr[next_length].clone(),
+            "kv_indices": self._decode_kv_indices[:self.batch_size],
+            "last_page_offset": self._decode_last_page_offset[
+                next_length].clone(),
+            "kv_param": self.scales,
+        }
+        self._cuda_graph_decode = True
+
+    def advance_cuda_graph_decode(self):
+        if not self._cuda_graph_decode:
+            raise RuntimeError("CUDA graph decode metadata is not enabled")
+        self._cuda_graph_specs["last_page_offset"].add_(1)
 
     def get_seq_length(self, layer_idx: Optional[int] = 0) -> int:
         """Returns the sequence length of the cached states. A layer index can be optionally passed."""

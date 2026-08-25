@@ -4,6 +4,8 @@ import torch
 from safetensors.torch import save_file
 
 from e2e.checkpoint_utils import streaming_gptq
+from e2e.checkpoint_utils import rotation_utils
+from quarot.functional.hadamard import matmul_grouped_h256
 
 
 class _ToyLayer(torch.nn.Module):
@@ -12,10 +14,10 @@ class _ToyLayer(torch.nn.Module):
         self.self_attn = torch.nn.Module()
         self.self_attn.o_proj = torch.nn.Linear(4, 4, bias=False)
         self.mlp = torch.nn.Module()
-        self.mlp.down_proj = torch.nn.Linear(4, 4, bias=False)
+        self.mlp.down_proj = torch.nn.Linear(256, 256, bias=False)
         with torch.no_grad():
             self.self_attn.o_proj.weight.copy_(torch.eye(4))
-            self.mlp.down_proj.weight.copy_(torch.eye(4))
+            self.mlp.down_proj.weight.copy_(torch.eye(256))
 
 
 def test_calibration_layer_installs_runtime_hadamards_without_changing_keys(
@@ -24,7 +26,7 @@ def test_calibration_layer_installs_runtime_hadamards_without_changing_keys(
     original_keys = tuple(layer.state_dict())
     config = SimpleNamespace(
         num_attention_heads=2, hidden_size=4, head_dim=2,
-        intermediate_size=4)
+        intermediate_size=256)
 
     # A last-dimension reversal makes the attention head-axis transform easy
     # to distinguish from an incorrect full-hidden-dimension transform.
@@ -35,10 +37,11 @@ def test_calibration_layer_installs_runtime_hadamards_without_changing_keys(
 
     x = torch.arange(4, dtype=torch.float32).reshape(1, 1, 4)
     attention = layer.self_attn.o_proj(x)
-    mlp = layer.mlp.down_proj(x)
+    mlp_x = torch.arange(256, dtype=torch.float32).reshape(1, 1, 256)
+    mlp = layer.mlp.down_proj(mlp_x)
 
     assert torch.equal(attention, torch.tensor([[[2., 3., 0., 1.]]]))
-    assert torch.equal(mlp, torch.tensor([[[3., 2., 1., 0.]]]))
+    assert torch.equal(mlp, matmul_grouped_h256(mlp_x))
     assert tuple(layer.state_dict()) == original_keys
     assert dict(layer.named_modules())["self_attn.o_proj"] is layer.self_attn.o_proj
     assert dict(layer.named_modules())["mlp.down_proj"] is layer.mlp.down_proj
@@ -71,6 +74,7 @@ from transformers.models.qwen3.modeling_qwen3 import Qwen3DecoderLayer
 def test_supported_family_layer_preserves_state_and_installs_hooks(
         config, decoder_cls):
     source = decoder_cls(config, 0).to(dtype=torch.float16)
+    rotation_utils.pad_mlp_modules(source)
     prefix = "model.layers.0."
     tensors = {prefix + key: value.clone()
                for key, value in source.state_dict().items()}
@@ -114,4 +118,3 @@ def test_fp32_embedding_produces_fp16_calibration_activations(tmp_path):
     assert inps.dtype == torch.float16
     assert outs.dtype == torch.float16
     assert torch.equal(inps[0], embedding[loader[0][0][0]].half())
-

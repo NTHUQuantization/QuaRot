@@ -45,7 +45,7 @@ void FlashInferBatchDecodeKernel_i4(__half* o, __half* q, void* kv_data,
 
  hipLaunchKernelGGL(( flashinfer::BatchDecodeWithPagedKVCacheKernel<
       rotary_mode, norm_on_the_fly, vec_size, bdx, bdy, FoldFactor, DTypeInQ,
-      DTypeIn, DTypeOut, int32_t>), dim3(nblks), dim3(nthrs), 0, 0, 
+      DTypeIn, DTypeOut, int32_t>), dim3(nblks), dim3(nthrs), 0, 0,
       q, paged_kv, o, sm_scale, rope_inv_scale, rope_inv_theta);
 }
 
@@ -74,7 +74,7 @@ constexpr size_t vec_size = (vec_size_a > vec_size_b ? vec_size_a : vec_size_b);
   dim3 nblks(paged_kv.batch_size * ((paged_kv.num_heads + bdy - 1) / bdy));
   dim3 nthrs(bdx, bdy);
  hipLaunchKernelGGL(( flashinfer::AppendPagedKVCachePrefillKernel<head_dim, vec_size, bdx, bdy, T,
-                                              int32_t>), dim3(nblks), dim3(nthrs), 0, 0, 
+                                              int32_t>), dim3(nblks), dim3(nthrs), 0, 0,
       paged_kv, (T*)key, (T*)value, key_param, value_param, seqlen_indptr);
 }
 
@@ -144,7 +144,7 @@ void FlashInferBatchDecodeKernel_f16(__half* o, __half* q, void* kv_data,
   dim3 nthrs(bdx, bdy);
  hipLaunchKernelGGL(( flashinfer::BatchDecodeWithPagedKVCacheKernel<
       rotary_mode, norm_on_the_fly, vec_size, bdx, bdy, FoldFactor, DTypeInQ,
-      DTypeIn, DTypeOut, int32_t>), dim3(nblks), dim3(nthrs), 0, 0, 
+      DTypeIn, DTypeOut, int32_t>), dim3(nblks), dim3(nthrs), 0, 0,
       q, paged_kv, o, sm_scale, rope_inv_scale, rope_inv_theta);
 }
 
@@ -173,7 +173,7 @@ constexpr size_t vec_size = (vec_size_a > vec_size_b ? vec_size_a : vec_size_b);
   dim3 nblks(paged_kv.batch_size * ((paged_kv.num_heads + bdy - 1) / bdy));
   dim3 nthrs(bdx, bdy);
  hipLaunchKernelGGL(( flashinfer::AppendPagedKVCachePrefillKernel<head_dim, vec_size, bdx, bdy, T,
-                                              int32_t>), dim3(nblks), dim3(nthrs), 0, 0, 
+                                              int32_t>), dim3(nblks), dim3(nthrs), 0, 0,
       paged_kv, (T*)key, (T*)value, key_param, value_param, seqlen_indptr);
 }
 

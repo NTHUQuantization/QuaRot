@@ -14,9 +14,11 @@ from transformers.utils.hub import cached_file
 
 from e2e.checkpoint_utils import gptq_utils, rotation_utils
 from quarot.functional import apply_exact_had_to_linear, pack_i4
+from quarot.functional.hadamard import (
+    grouped_ffn_physical_width, matmul_grouped_h256)
 
 
-_STREAM_VERSION = 1
+_STREAM_VERSION = 2
 _REMOVED_NORMS = (
     "post_attention_layernorm.weight",
     "input_layernorm.weight",
@@ -25,8 +27,7 @@ _REMOVED_NORMS = (
 
 
 def _remap(key):
-    return key.replace("mlp.down_proj", "mlp.down_proj.2").replace(
-        "self_attn.o_proj", "self_attn.o_proj.1")
+    return key.replace("self_attn.o_proj", "self_attn.o_proj.1")
 
 
 class _SafeTensorSource:
@@ -139,7 +140,23 @@ def _rotate_layer(tensors, prefix, config, q, device, compute_dtype,
     v_key = prefix + "self_attn.v_proj.weight"
     tensors[v_key] = _hadamard(tensors[v_key], output=True, had_dim=head_dim)
     tensors[o_key] = _hadamard(tensors[o_key])
-    tensors[down_key] = _hadamard(tensors[down_key])
+    logical = tensors[mlp_inputs[0]].shape[0]
+    physical = grouped_ffn_physical_width(logical)
+    padding = physical - logical
+    if padding:
+        for key in mlp_inputs:
+            tensors[key] = torch.nn.functional.pad(
+                tensors[key], (0, 0, 0, padding))
+            bias_key = key[:-len("weight")] + "bias"
+            if bias_key in tensors:
+                tensors[bias_key] = torch.nn.functional.pad(
+                    tensors[bias_key], (0, padding))
+        tensors[down_key] = torch.nn.functional.pad(
+            tensors[down_key], (0, padding))
+    down_dtype = tensors[down_key].dtype
+    tensors[down_key] = matmul_grouped_h256(
+        tensors[down_key].to(device=device, dtype=compute_dtype)).to(
+            device="cpu", dtype=down_dtype)
     if remove_norms:
         del tensors[input_norm], tensors[post_norm]
     else:

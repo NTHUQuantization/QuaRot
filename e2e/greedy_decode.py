@@ -7,11 +7,14 @@ import time
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
+import quarot
 
 try:
     from e2e.benchmark_real import load_int4
+    from e2e.model_registry import tokenizer_source
 except ImportError:
     from benchmark_real import load_int4
+    from model_registry import tokenizer_source
 
 
 def parse_args():
@@ -24,11 +27,6 @@ def parse_args():
     model_group.add_argument(
         "--fp16-model",
         help="Original Hugging Face FP16 model name or local path.",
-    )
-    parser.add_argument(
-        "--tokenizer",
-        default="meta-llama/Llama-2-7b-hf",
-        help="Tokenizer name or local path (default: %(default)s).",
     )
     parser.add_argument(
         "--prompt",
@@ -57,7 +55,10 @@ def parse_args():
 @torch.inference_mode()
 def greedy_decode(model, input_ids, new_tokens):
     model._expected_max_length = input_ids.shape[1] + new_tokens
-    generated = input_ids
+    generated = torch.empty(
+        (input_ids.shape[0], input_ids.shape[1] + new_tokens),
+        dtype=input_ids.dtype, device=input_ids.device)
+    generated[:, :input_ids.shape[1]].copy_(input_ids)
 
     torch.cuda.synchronize()
     started = time.perf_counter()
@@ -67,19 +68,19 @@ def greedy_decode(model, input_ids, new_tokens):
 
     past_key_values = output.past_key_values
     next_token = output.logits[:, -1].argmax(dim=-1, keepdim=True)
-    generated = torch.cat((generated, next_token), dim=1)
+    generated[:, input_ids.shape[1]].copy_(next_token[:, 0])
 
     torch.cuda.synchronize()
     started = time.perf_counter()
-    for _ in range(new_tokens - 1):
+    for token_index in range(1, new_tokens):
         output = model(
-            generated[:, -1:],
+            next_token,
             past_key_values=past_key_values,
             use_cache=True,
         )
         past_key_values = output.past_key_values
         next_token = output.logits[:, -1].argmax(dim=-1, keepdim=True)
-        generated = torch.cat((generated, next_token), dim=1)
+        generated[:, input_ids.shape[1] + token_index].copy_(next_token[:, 0])
     torch.cuda.synchronize()
     decode_elapsed = time.perf_counter() - started
 
@@ -95,8 +96,11 @@ def main():
     if not torch.cuda.is_available():
         raise RuntimeError("QuaRot INT4 generation requires a CUDA/ROCm GPU")
 
+    tokenizer_model = tokenizer_source(
+        args.fp16_model or args.model,
+        local_files_only=args.local_files_only)
     tokenizer = AutoTokenizer.from_pretrained(
-        args.tokenizer,
+        tokenizer_model,
         local_files_only=args.local_files_only,
     )
     input_ids = tokenizer(args.prompt, return_tensors="pt").input_ids.cuda()
@@ -116,6 +120,12 @@ def main():
             model.cache_dtype = "float16"
         cache_dtype = model.cache_dtype
         model_name = args.model
+        # Weight layout conversion is model initialization, not inference.
+        # Materialize every static WMMA layout before timing prefill/decode.
+        for module in model.modules():
+            if isinstance(module, quarot.nn.Linear4bit):
+                module._prepack_weight()
+        torch.cuda.synchronize()
 
     generated, prefill_elapsed, decode_elapsed = greedy_decode(
         model, input_ids, args.new_tokens)
@@ -124,6 +134,7 @@ def main():
     decode_tokens = args.new_tokens - 1
     result = {
         "model": model_name,
+        "tokenizer": tokenizer_model,
         "weight_dtype": "float16" if args.fp16_model else "int4",
         "cache_dtype": cache_dtype,
         "prompt": args.prompt,

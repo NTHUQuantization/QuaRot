@@ -18,9 +18,10 @@ from transformers.utils import SAFE_WEIGHTS_INDEX_NAME
 from e2e.checkpoint_utils import data_utils, gptq_utils, rotation_utils
 from e2e.checkpoint_utils import streaming_rtn as stream
 from quarot.functional import pack_i4, unpack_i4
-from quarot.functional.hadamard import get_hadK, matmul_hadU_cuda
+from quarot.functional.hadamard import (
+    get_hadK, matmul_grouped_h256, matmul_hadU_cuda)
 
-_VERSION = 4
+_VERSION = 5
 _CALIBRATION_DTYPE = torch.float16
 _FAMILIES = {
     "llama": (LlamaDecoderLayer, LlamaRotaryEmbedding),
@@ -42,7 +43,6 @@ def _apply_hadamard(x, had_rem_dim, rem_dim):
 def _install_online_hadamards(layer, config):
     """Make the FP16 calibration layer match the transformed INT4 runtime."""
     head_had, head_rem_dim = get_hadK(config.num_attention_heads)
-    mlp_had, mlp_rem_dim = get_hadK(config.intermediate_size)
     num_heads = config.num_attention_heads
     head_dim = getattr(
         config, "head_dim", config.hidden_size // config.num_attention_heads)
@@ -57,7 +57,7 @@ def _install_online_hadamards(layer, config):
 
     def mlp_input_hadamard(_, inputs):
         (x,) = inputs
-        return (_apply_hadamard(x, mlp_had, mlp_rem_dim),)
+        return (matmul_grouped_h256(x),)
 
     # Hooks preserve the original Linear module names used by GPTQ and add no
     # buffers to state_dict(), unlike wrapping the projections in Sequential.
@@ -77,6 +77,7 @@ def _calibration_types(config):
 def _layer_from_tensors(config, index, tensors, prefix):
     decoder_cls, _ = _calibration_types(config)
     layer = decoder_cls(config, index).to(dtype=_CALIBRATION_DTYPE)
+    rotation_utils.pad_mlp_modules(layer)
     state = {key[len(prefix):]: value for key, value in tensors.items()}
     # Older Llama checkpoints persist this derived RoPE buffer, while newer
     # Transformers versions compute it from config and no longer register it.

@@ -45,6 +45,32 @@ void matmul_bpre_host(const Int4Storage* A,
                       uint32_t K,
                       int32_t* C);
 
+void matmul_bpre_grouped_scale_host(const Int4Storage* A,
+                                    const Int4Storage* BPre,
+                                    const half* scale_group,
+                                    const half* scale_weight,
+                                    uint32_t M,
+                                    uint32_t N,
+                                    uint32_t K,
+                                    half* C,
+                                    uint32_t scale_groups = 0);
+
+void matmul_bpre_multi_scale_host(const Int4Storage* A,
+                                  const Int4Storage* B0,
+                                  const Int4Storage* B1,
+                                  const Int4Storage* B2,
+                                  const half* scale_activation,
+                                  const half* scale_weight0,
+                                  const half* scale_weight1,
+                                  const half* scale_weight2,
+                                  uint32_t M,
+                                  uint32_t N0,
+                                  uint32_t N1,
+                                  uint32_t N2,
+                                  uint32_t K,
+                                  half* C);
+
+
 // Clear cached prepacked B weights. Call this if weight device pointers are
 // destroyed/reallocated during a long-running process.
 void clear_prepacked_weight_cache();

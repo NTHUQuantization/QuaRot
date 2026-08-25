@@ -194,10 +194,6 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--int4-model", required=True)
     parser.add_argument("--reference-model", required=True)
-    parser.add_argument(
-        "--tokenizer-model",
-        help="Optional tokenizer ID/path when the reference model tokenizer "
-             "is gated or unavailable (defaults to --reference-model).")
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--prefill", type=int, default=32)
     parser.add_argument("--decode-steps", type=int, default=4)
@@ -228,7 +224,7 @@ def main():
     device = torch.device("cuda")
     evaluation = get_loaders(
         args.dataset, seed=0,
-        model=args.tokenizer_model or args.reference_model,
+        model=args.reference_model,
         seqlen=args.ppl_chunk, hf_token=args.hf_token, eval_mode=True)
     ppl_ids_cpu = evaluation.input_ids[:, :args.ppl_tokens].cpu()
 

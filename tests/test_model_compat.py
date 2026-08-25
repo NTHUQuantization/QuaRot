@@ -77,17 +77,52 @@ def test_benchmark_models_select_int4_fusions(
     assert layer.mlp._fused_ffn
 
 
-@pytest.mark.parametrize("width,prefill_fused,decode_fused", [
-    (11008, False, True), (13824, False, True),
-    (22016, False, True), (27648, True, True),
-    (25600, True, True), (28672, True, True),
+@pytest.mark.parametrize("width", [
+    11008, 13824, 14336, 22016, 25600, 27648, 28672, 29568,
 ])
-def test_phase_specific_ffn_dispatch(width, prefill_fused, decode_fused):
+def test_every_phase_uses_universal_ffn_dispatch(width):
     from types import SimpleNamespace
     from e2e.quantized_common import QuarotMLPMixin
 
     mlp = SimpleNamespace(intermediate_size=width, _fused_ffn=True)
-    mlp._unfused_prefill_widths = QuarotMLPMixin._unfused_prefill_widths
     decide = QuarotMLPMixin._should_use_fused_ffn
-    assert decide(mlp, torch.empty(1, 2048, 1)) is prefill_fused
-    assert decide(mlp, torch.empty(1, 1, 1)) is decode_fused
+    assert decide(mlp, torch.empty(1, 2048, 1)) is True
+    assert decide(mlp, torch.empty(1, 1, 1)) is True
+
+
+def test_universal_ffn_pads_physical_width_to_h256():
+    from quarot.functional.hadamard import grouped_ffn_physical_width
+
+    assert grouped_ffn_physical_width(29568) == 29696
+    config = LlamaConfig(
+        vocab_size=128, hidden_size=128, intermediate_size=29568,
+        num_hidden_layers=1, num_attention_heads=2,
+        num_key_value_heads=1, max_position_embeddings=128)
+    config._attn_implementation = "flash_attention_2"
+    with torch.device("meta"):
+        model = QuarotLlamaForCausalLM(config)
+    mlp = model.model.layers[0].mlp
+    assert mlp.ffn_physical_size == 29696
+    assert mlp.gate_proj.out_features == 29696
+    assert mlp.up_proj.out_features == 29696
+    assert mlp.down_proj.in_features == 29696
+
+
+def test_padded_grouped_h256_preserves_dense_down_projection():
+    from quarot.functional.hadamard import (
+        grouped_ffn_physical_width, matmul_grouped_h256)
+
+    torch.manual_seed(256)
+    logical, hidden = 300, 32
+    physical = grouped_ffn_physical_width(logical)
+    activation = torch.randn(3, logical, dtype=torch.float64)
+    weight = torch.randn(hidden, logical, dtype=torch.float64)
+    activation = torch.nn.functional.pad(
+        activation, (0, physical - logical))
+    weight = torch.nn.functional.pad(weight, (0, physical - logical))
+    expected = activation @ weight.T
+    rotated_activation = matmul_grouped_h256(activation)
+    rotated_weight = matmul_grouped_h256(weight)
+    torch.testing.assert_close(
+        rotated_activation @ rotated_weight.T, expected,
+        rtol=1e-12, atol=1e-12)

@@ -41,9 +41,11 @@ def attention_unfused(x):
 
 
 def ffn_unfused(gate, up):
-    y = hadamard(torch.nn.functional.silu(gate.float()) * up.float())
-    scale = (y.abs().amax(-1, keepdim=True) / 7).half().clamp_min(torch.finfo(torch.float16).tiny)
-    return pack_s4(y, scale), scale
+    y = torch.nn.functional.silu(gate.float()) * up.float()
+    y = hadamard(y.reshape(*y.shape[:-1], -1, 256)).reshape_as(y)
+    scale = (y.reshape(*y.shape[:-1], -1, 256).abs().amax(-1) / 7).half()
+    scale.clamp_min_(torch.finfo(torch.float16).tiny)
+    return pack_s4(y, scale.repeat_interleave(256, -1)), scale
 
 
 def measure(fn, warmup, iterations, repeats):
@@ -102,13 +104,27 @@ def main():
         cases.append({"name": name, "shape": list(shape), "dtype": "float16", "fused": fused,
                       "unfused": unfused, "speedup": speedup,
                       "latency_reduction_percent": (1.0 - 1.0 / speedup) * 100.0})
-    for batch, width in [(1, 4096), (2, 8192)]:
+    # Physical widths cover common Llama/Qwen FFNs. 29696 is the padded form
+    # of Qwen's 29568-wide MLP and exercises the universal padding contract.
+    ffn_specs = [
+        ("ffn_decode", 1, 11008),
+        ("ffn_decode", 1, 14336),
+        ("ffn_decode", 1, 22016),
+        ("ffn_decode", 1, 28672),
+        ("ffn_decode_padded", 1, 29696),
+        ("ffn_prefill_16", 16, 14336),
+        ("ffn_prefill_128", 128, 14336),
+    ]
+    for name, batch, width in ffn_specs:
         gate = torch.randn(batch, width, device="cuda", dtype=torch.float16)
         up = torch.randn_like(gate)
-        fused = measure(lambda: _HIP.fused_ffn_silu_hadamard_quant(gate, up), args.warmup, args.iterations, args.repeats)
+        fused = measure(
+            lambda: _HIP.fused_ffn_silu_hadamard_quant(
+                gate, up),
+            args.warmup, args.iterations, args.repeats)
         unfused = measure(lambda: ffn_unfused(gate, up), args.warmup, args.iterations, args.repeats)
         speedup = unfused["median_us"] / fused["median_us"]
-        cases.append({"name": "ffn", "shape": [batch, width], "dtype": "float16", "fused": fused,
+        cases.append({"name": name, "shape": [batch, width], "dtype": "float16", "fused": fused,
                       "unfused": unfused, "speedup": speedup,
                       "latency_reduction_percent": (1.0 - 1.0 / speedup) * 100.0})
     result = {
