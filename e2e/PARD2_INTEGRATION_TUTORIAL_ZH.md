@@ -472,3 +472,32 @@ python e2e/benchmark_pard2.py \
 這次整合的核心成果不是一個 speculative loop，而是一套可被驗證的共同 execution contract：native GQA KV4、transactional cache、virtual causal verifier、TI/TD alignment，以及跨 M=1/M=16 穩定的 row-independent RMSNorm。
 
 到這個節點，我們才有資格問「哪個部分值得優化」。下一篇會看到，多數直覺上省 FLOPs 的方案並沒有改善 E2E；真正被採用的，是能通過 parity、paired latency、CV 與維護成本共同審查的 batched LM-head 與 cached TD basis。
+
+## 16. Post-merge qualification：把整合成果放回最新 fused_v1
+
+前面的第 12 節記錄「PARD2 首次通過 parity」時的 execution contract。後來合併 `origin/fused_v1@cc4ffca`，target 加入 grouped-scale GEMM、fused projections、persistent metadata 等路徑；因此不能把舊 AR 或舊 acceptance 直接當成新 runtime 的 oracle。正確做法是讓 post-merge AR、TI、TD 共用同一個 target，再重新跑完整 qualification。
+
+### 16.1 為何正式量測前要預編譯 proposal shapes
+
+實際 drafter input 的 M 會落在 15–30。直接以 cudagraph 預編譯全部 shape，會讓 private pools 與 `StaticCache` buffers 累積，在 M=25/26 接近 30.8 GiB 並 OOM。最後採用 `max-autotune-no-cudagraphs`：每個 M 建立短命 cache、eager prefill 一 token，再於 `torch.inference_mode()` 中 materialize compiled drafter；每個 shape 完成後立即釋放 cache。如此 measured sweeps 不再支付 input-dependent compile 成本，也不會為了暖機犧牲正式量測所需的 VRAM headroom。
+
+### 16.2 三資料集正式結果
+
+以下仍是 batch 1、greedy、正常 EOS、256-token 上限、8 warmups、3 sweeps；每個 mode/dataset 使用獨立程序。Speedup 是逐 `(sweep, prompt)` 配對後的 median，CI 為 10,000-sample bootstrap。
+
+| Dataset | Mode | Steady tok/s | Paired / post-merge AR | 95% CI | Mean accept | Peak VRAM | Parity |
+|---|---|---:|---:|---:|---:|---:|---|
+| HumanEval | TI | 49.783 | 1.607× | [1.553, 1.702] | 5.656 | 8.62 GiB | exact |
+| HumanEval | TD | 57.438 | 1.854× | [1.830, 1.901] | 6.431 | 8.70 GiB | exact |
+| GSM8K | TI | 49.785 | 1.602× | [1.557, 1.669] | 5.548 | 8.20 GiB | exact |
+| GSM8K | TD | 59.542 | 1.910× | [1.811, 1.982] | 6.355 | 8.25 GiB | exact |
+| MATH-500 | TI | 52.688 | 1.789× | [1.565, 2.006] | 5.787 | 8.53 GiB | exact |
+| MATH-500 | TD | 60.209 | 2.015× | [1.840, 2.222] | 6.489 | 8.60 GiB | exact |
+
+Post-merge AR steady TPS 為 HumanEval 30.967、GSM8K 31.036、MATH-500 30.005。六組 CI 下界皆大於 1.0，steady run-level CV 皆低於 5%，VRAM headroom 為 72.7–74.2%，因此 `hard_gate=true`。MATH TD 另做 cache-warm rerun：steady 與第一次只差 −0.085%，E2E CV 由 8.31% 降至 1.83%，證明第一次 E2E 波動來自首載，不是 runtime 不穩定。
+
+### 16.3 回歸測試與研究結論
+
+最終 `pytest -q tests` 為 **239 passed**。TI/TD 對 post-merge AR 分別完成 HumanEval/GSM8K 各 240/240、MATH-500 各 60/60 exact token parity；clean HIP extension 亦保留 26/26 pybind exports。
+
+這輪最重要的教學結論是：合併 target 最佳化後，必須重新定義共同 oracle，而不是要求新 target 重現舊 rounding。舊數值路徑可作 diagnostic，但若它不再對 current AR parity，就不能拿來決定 speculative acceptance。完整衝突與 ablation 證據見 `FUSED_V1_MERGE_CONFLICTS_ZH.md`。

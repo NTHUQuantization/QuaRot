@@ -72,6 +72,58 @@ def tokenize(tokenizer, text, device="cuda"):
     return ids.to(device)
 
 
+@torch.inference_mode()
+def precompile_proposal_shapes(runtime):
+    """Materialize every static PARD2 proposal graph outside measured runs.
+
+    After the first round, ``draft_input`` contains the accepted prefix plus
+    the target correction/bonus token. Appending ``draft_k - 1`` PARD masks
+    therefore gives M in [draft_k, 2 * draft_k], inclusive. Explicitly
+    exercising all 16 shapes makes a cold compile cache reproducible instead
+    of letting a scored prompt pay an input-dependent Dynamo/Inductor cost.
+    """
+    if runtime.draft is None:
+        return []
+    device = next(runtime.draft.parameters()).device
+    target_dtype = next(runtime.target.parameters()).dtype
+    compiled = []
+    k = runtime.spec.draft_k
+    for rows in range(k, 2 * k + 1):
+        print(f"[precompile] proposal M={rows}", flush=True)
+        real_rows = rows - (k - 1)
+        input_ids = torch.ones((1, rows), device=device, dtype=torch.long)
+        input_ids[:, real_rows:] = runtime.spec.pard_token
+        positions = torch.arange(1, rows + 1, device=device)
+        cache = runtime._draft_cache()
+        kwargs = {}
+        if runtime.mode == "pard2-td":
+            if runtime.td_unique_projection:
+                width = runtime.draft.target_proj.out_features
+                kwargs["projected_target_feat"] = torch.zeros(
+                    (1, rows, width), device=device,
+                    dtype=next(runtime.draft.parameters()).dtype)
+            else:
+                kwargs["target_feat"] = torch.zeros(
+                    (1, rows, runtime.spec.target_dim), device=device,
+                    dtype=target_dtype)
+        prefix_kwargs = {name: value[:, :1] for name, value in kwargs.items()}
+        runtime.draft(
+            input_ids=torch.ones((1, 1), device=device, dtype=torch.long),
+            past_key_values=cache, cache_position=torch.zeros(
+                1, device=device, dtype=torch.long), use_cache=True,
+            attention_mask=None, return_dict=True, **prefix_kwargs)
+        runtime.draft_forward(
+            input_ids=input_ids, past_key_values=cache,
+            cache_position=positions, use_cache=True, attention_mask=None,
+            return_dict=True, **kwargs)
+        torch.cuda.synchronize()
+        compiled.append(rows)
+        del cache
+        gc.collect()
+        torch.cuda.empty_cache()
+    return compiled
+
+
 def parser():
     result = argparse.ArgumentParser()
     result.add_argument("--mode", required=True, choices=("ar", "pard2-ti", "pard2-td"))
@@ -88,6 +140,9 @@ def parser():
     result.add_argument("--offset", type=int, default=0,
                         help="smoke-only starting prompt index; requires --limit")
     result.add_argument("--compile-mode", default="max-autotune")
+    result.add_argument("--precompile-draft-shapes",
+                        action=argparse.BooleanOptionalAction, default=False,
+                        help="seed all static proposal graphs before timing")
     result.add_argument("--output", required=True)
     result.add_argument("--ignore-eos", action="store_true")
     result.add_argument("--calibration")
@@ -152,6 +207,14 @@ def main(argv=None):
         td_basis_fold=args.td_basis_fold,
         fused_norm_quant=args.fused_norm_quant)
 
+    compiled_shapes = []
+    if (args.mode != "ar" and args.compile_mode != "eager"
+            and args.precompile_draft_shapes):
+        if args.compile_mode != "max-autotune-no-cudagraphs":
+            raise ValueError("full-shape precompile requires "
+                             "max-autotune-no-cudagraphs")
+        compiled_shapes = precompile_proposal_shapes(runtime)
+
     # Warmups are deliberately not selected from the scored 80/80/20 prompts.
     warmup_texts = [f"Warmup {index}: briefly explain integer {index}."
                     for index in range(args.warmups)]
@@ -180,6 +243,8 @@ def main(argv=None):
             "greedy": True, "ignore_eos": args.ignore_eos,
             "target": args.target, "draft_revision": "67a1516c8f6fc145cda99916799a0cbb3a4af135",
             "upstream_commit": "6f279bf3f1680e0b5d71c562ca5b91bdeef4c038",
+            "precompile_draft_shapes": args.precompile_draft_shapes,
+            "compiled_proposal_shapes": compiled_shapes,
             "td_cache_basis": args.td_cache_basis,
             "td_lazy_features": args.td_lazy_features,
             "td_unique_projection": args.td_unique_projection,

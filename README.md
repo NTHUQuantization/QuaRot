@@ -99,6 +99,41 @@ python e2e/benchmark_accuracy.py \
   --output /tmp/benchmark_accuracy_llama3_8b_gptq.json
 ```
 
+## PARD2 speculative decoding (Qwen3-8B)
+
+This branch integrates official PARD2-TI/TD with the fused W4A4KV4 HIP target.
+The qualified configuration is batch 1, greedy decoding, normal EOS handling,
+`draft_k=15`, native GQA KV4, batched LM-head, and cached TD basis.
+
+### Documentation
+
+- [Integration tutorial (ZH)](e2e/PARD2_INTEGRATION_TUTORIAL_ZH.md): verifier, cache transactions, parity debugging, and the first qualified runtime.
+- [Optimization tutorial (ZH)](e2e/PARD2_OPTIMIZATION_TUTORIAL_ZH.md): batched LM-head, cached TD basis, memory/roofline analysis, and post-merge qualification.
+- [Merge conflict record (ZH)](e2e/FUSED_V1_MERGE_CONFLICTS_ZH.md): decisions made while merging `origin/fused_v1`, rejected fallbacks, and performance evidence.
+- [Post-merge result index](pard2_post_merge_results/README.md): benchmark contract, aggregate results, raw artifact names, and reproduction commands.
+
+The older `PARD2_INTEGRATION_REPORT_ZH*.md` files are experiment journals;
+the two tutorials above are the canonical onboarding documents.
+
+### Qualified benchmark
+
+```bash
+python e2e/benchmark_pard2.py \
+  --mode pard2-td \
+  --dataset math_500 \
+  --generated-tokens 256 \
+  --warmups 8 \
+  --sweeps 3 \
+  --compile-mode max-autotune-no-cudagraphs \
+  --precompile-draft-shapes \
+  --output /tmp/pard2-td_math_500.json
+```
+
+Run AR, TI, and TD in separate processes. Then place the nine formal JSON
+files under the names expected by `e2e/qualify_pard2.py`. The checked-in
+qualification summary records exact parity, paired bootstrap confidence
+intervals, run-level CV, and VRAM headroom.
+
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=spcl/QuaRot&type=Date)](https://star-history.com/#spcl/QuaRot&Date)

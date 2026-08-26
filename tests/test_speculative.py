@@ -187,6 +187,8 @@ def test_cli_defaults_select_exact_norm_and_batched_lm_head(make_parser):
     assert args.td_unique_projection is False
     assert args.fused_norm_quant is False
     assert args.exact_small_chunk is None
+    if make_parser is benchmark_parser:
+        assert args.precompile_draft_shapes is False
 
 
 @pytest.mark.parametrize(("predictions", "accepted"), [

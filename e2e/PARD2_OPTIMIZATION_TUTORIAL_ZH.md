@@ -410,7 +410,7 @@ row-independent RMSNorm
 | TI eager | 1.04896× | 1.05770× | 單 prompt smoke 通過 3% |
 | TD max-autotune | 1.01031× | 1.01333× | 未通過全域 gate |
 
-所有 packed bytes/scales、tokens 與 acceptance 都通過 parity；完整 suite 最終為 161 passed。
+所有 packed bytes/scales、tokens 與 acceptance 都通過 parity；該階段完整 suite 為 161 passed，合併後最終回歸擴充為 239 passed。
 
 為何仍不設為預設？
 
@@ -586,7 +586,7 @@ Row-independent RMSNorm 仍保持開啟，因為它是讓 AR M=1 與 verifier M�
 
 ### Regression
 
-最終完整 `pytest -q tests`：`161 passed`，只有既有 Triton deprecation warnings。
+該階段完整 `pytest -q tests` 為 `161 passed`；合併後最終回歸為 `239 passed`，只有既有 Triton deprecation warnings。
 
 ## 13. 結論：採用的是證據鏈，不只是 patch
 
@@ -735,3 +735,31 @@ rocprofv3 的衍生 `FETCH_SIZE` 與底層 `GL2C_EA_RDREQ_128B` 在這組 gfx120
 依這份分類，優先順序應是：先增加 verifier/LM-head/drafter 的跨 row weight reuse，再減少 KV/feature bytes 與 temporary materialization，接著才處理 launch、barrier 與小型 fusion。只有當 operational intensity 接近 ridge，或 profiler 顯示 WMMA busy 已成主要限制時，才值得把重心轉向純 compute kernel tuning。
 
 在容量面，batch 1 不緊張；下一個有資訊量的 memory 實驗不是繼續省十幾 MiB basis，而是做 `(context length, draft_k, batch)` 的 peak-VRAM 曲線，拆出 target KV、draft cache、transaction buffer 的斜率。這能直接回答何時 72% headroom 會被 serving workload 吃完。
+
+## 16. Post-merge 主線最佳化正式結果
+
+合併 `origin/fused_v1@cc4ffca` 後，我們保留 batched LM-head、cached TD basis 與其 parity contract，並讓 AR、TI、TD 共用最新 target。下表同時回答兩個不同問題：`post/old` 衡量同一 speculative mode 是否真的變快；`paired/post AR` 則衡量它在最新 fused_v1 基線上是否仍有收益。舊主線與 post-merge 都是 batch 1、greedy、正常 EOS、256-token 上限。
+
+| Dataset | Mode | 舊主線 steady tok/s | Post-merge steady tok/s | Post / old | Paired / post AR | Mean accept | Peak VRAM |
+|---|---|---:|---:|---:|---:|---:|---:|
+| HumanEval | TI | 47.052 | 49.783 | 1.058× | 1.607× | 5.656 | 8.62 GiB |
+| HumanEval | TD | 53.541 | 57.438 | 1.073× | 1.854× | 6.431 | 8.70 GiB |
+| GSM8K | TI | 39.037 | 49.785 | 1.275× | 1.602× | 5.548 | 8.20 GiB |
+| GSM8K | TD | 46.418 | 59.542 | 1.283× | 1.910× | 6.355 | 8.25 GiB |
+| MATH-500 | TI | 42.919 | 52.688 | 1.228× | 1.789× | 5.787 | 8.53 GiB |
+| MATH-500 | TD | 47.618 | 60.209 | 1.264× | 2.015× | 6.489 | 8.60 GiB |
+
+Post-merge AR steady TPS 為 HumanEval 30.967、GSM8K 31.036、MATH-500 30.005。它比舊 AR 改善 1.42–2.29×，幅度大於 speculative mode 的改善，所以「相對 AR 倍率」可能下降，不能因此判定合併退化；公平判準是先看同 mode 的 post/old，六組皆高於 1，再確認 paired/post-AR CI 下界皆大於 1。
+
+Acceptance 沒有被這兩項最佳化刻意改寫；它主要由 drafter 與 current target rounding 決定。Post-merge 對舊主線 acceptance 有小幅升降，但 TD 仍一致高於 TI。逐步 profiling 則顯示新 verifier 約快 10%、draft step 約快 32%，與 aggregate 同 mode 改善方向一致。
+
+### 16.1 被拒絕的 fallback 與 trade-off
+
+- 關閉 grouped path 可部分恢復舊 acceptance，但 TPS 約下降 45%，且對 current AR 只有 0/8 parity；不能採用。
+- 關閉 fused projections 不改 acceptance，TPS 約下降 27%；8/8 parity 但沒有速度理由採用。
+- eager drafter 同樣維持 acceptance/parity，但比 compiled no-cudagraph 路徑慢。
+- 全 shape cudagraph 預編譯會因 private pools 與 cache 累積在約 30.8 GiB OOM；改用 `max-autotune-no-cudagraphs` 與短命 per-shape cache，換取穩定暖機與 72.7–74.2% formal VRAM headroom。
+
+### 16.2 最終 qualification
+
+三資料集 TI/TD 全部 exact token parity；paired speedup 的六個 95% bootstrap CI 下界均大於 1.0，steady run-level CV 均低於 5%，`hard_gate=true`。最終 `pytest -q tests` 為 **239 passed**。因此合併後主線不是靠 acceptance 漂移換速度，而是在 current fused_v1 AR contract 下，同時通過 correctness、latency、variance 與 memory gate。
