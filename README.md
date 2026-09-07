@@ -28,6 +28,8 @@ The commands below use `meta-llama/Llama-3.1-8B` and write the converted
 checkpoint to `/models/quarot-llama-3.1-8b-gptq-int4`. Access to the gated
 Hugging Face model is required for conversion and for the FP16 reference runs.
 
+Generation, performance, and downstream benchmarks use the packed model's INT4 KV cache by default. The accuracy benchmark instead uses paper-style synthetic KV4 by default. Pass `--kv-cache-dtype float16` to select FP16 K/V for the applicable benchmark.
+
 ## Generate an INT4 checkpoint
 
 ### RTN
@@ -67,7 +69,7 @@ python e2e/benchmark_fusion_harness.py \
   --warmup 3 \
   --repeats 5 \
   --local-files-only \
-  --output /tmp/llama3_8b_fusion_benchmark.json
+  --output benchmark_results/performance/fusion/llama3_8b_fusion.json
 ```
 
 ## Real INT4 versus FP16 benchmark
@@ -79,25 +81,51 @@ python e2e/benchmark_real.py \
   --batch-size 1 \
   --prefill-seq-len 1024 \
   --decode-steps 64 \
-  --output /tmp/benchmark_real_llama3_8b_gptq.json
+  --output benchmark_results/performance/real/llama3_8b_gptq.json
 ```
 
 Add `--int4-only` when the FP16 reference does not fit in GPU memory. This
 still validates the packed checkpoint and fused dispatch, but it cannot report
 an INT4-to-FP16 speedup or numerical comparison.
 
-## Accuracy benchmark
+## Full-perplexity accuracy benchmark
+
+Evaluate the real packed INT4 checkpoint created above against its FP16 base
+model on the complete evaluation corpus:
 
 ```bash
 python e2e/benchmark_accuracy.py \
   --int4-model /models/quarot-llama-3.1-8b-gptq-int4 \
   --reference-model meta-llama/Llama-3.1-8B \
   --dataset wikitext2 \
-  --ppl-tokens 512 \
-  --ppl-chunk 128 \
-  --sequential-low-vram \
-  --output /tmp/benchmark_accuracy_llama3_8b_gptq.json
+  --context-length 2048 \
+  --ppl-batch-size 1 \
+  --output benchmark_results/accuracy/llama3_8b_gptq.json
 ```
+
+Use `--skip-reference` to evaluate only the packed INT4 checkpoint when the
+FP16 model does not fit in GPU memory. Supported datasets are `wikitext2`,
+`ptb`, and `c4`.
+
+## Downstream task benchmark
+
+Use the paper-pinned `lm-evaluation-harness` to evaluate the six 0-shot
+downstream tasks from QuaRot Table 9 with the real packed INT4 checkpoint:
+
+```bash
+python e2e/benchmark_downstream.py \
+  --int4-model /models/quarot-llama-3.1-8b-gptq-int4 \
+  --reference-model meta-llama/Llama-3.1-8B \
+  --batch-size 16 \
+  --max-length 2048 \
+  --bootstrap-iters 0 \
+  --resume \
+  --output benchmark_results/downstream/llama3_8b_gptq.json
+```
+
+This evaluates every validation/test example in PIQA, WinoGrande, HellaSwag,
+ARC-Easy, ARC-Challenge, and LAMBADA-OpenAI. It uses `acc_norm` for PIQA, HellaSwag, and
+both ARC tasks, and `acc` for WinoGrande and LAMBADA.
 
 ## Star History
 

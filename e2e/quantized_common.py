@@ -4,6 +4,7 @@ import torch
 from transformers.modeling_flash_attention_utils import _flash_attention_forward
 import quarot
 import quarot.transformers
+from quarot.transformers.kv_cache import matmul_had_HIP
 
 def config_head_dim(config):
     return getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
@@ -61,6 +62,16 @@ class QuarotAttentionMixin:
         else:
             query_states, key_states = self._quarot_apply_rotary(
                 query_states, key_states, cos, sin, unsqueeze_dim=2)
+            if (past_key_value is None and
+                    getattr(self, "_synthetic_kv4", False)):
+                # Paper fake quant: normalized Q/K Hadamard followed by
+                # symmetric, per-token INT4 quantize-dequantize for K and V.
+                query_states = matmul_had_HIP(
+                    query_states, dtype=torch.float32)
+                key_states = matmul_had_HIP(
+                    key_states, dtype=torch.float32)
+                key_states = _symmetric_per_token_i4_qdq(key_states)
+                value_states = _symmetric_per_token_i4_qdq(value_states)
             if past_key_value is None:
                 attn_output = _flash_attention_forward(
                     query_states, key_states, value_states, attention_mask,
@@ -109,6 +120,17 @@ class QuarotAttentionMixin:
             attn_output = attn_output.reshape(bsz, q_len, -1).contiguous()
             attn_output = self.o_proj(attn_output)
         return attn_output, None
+
+def _symmetric_per_token_i4_qdq(states):
+    """Paper-style groupsize=-1 symmetric INT4 fake quantization."""
+    original_shape = states.shape
+    flattened = states.reshape(*states.shape[:2], -1)
+    absmax = flattened.float().abs().amax(dim=-1, keepdim=True)
+    scale = absmax.div(7.0)
+    scale = torch.where(absmax == 0, torch.ones_like(scale), scale)
+    quantized = torch.clamp(torch.round(flattened.float() / scale), -8, 7)
+    return (quantized * scale).to(states.dtype).reshape(original_shape)
+
 
 class QuarotMLPMixin:
     def _init_quarot_mlp(self):

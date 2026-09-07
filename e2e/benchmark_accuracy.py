@@ -1,134 +1,41 @@
-"""Accuracy regression benchmark for dense QuaRot Llama/Qwen checkpoints."""
+"""Full-corpus perplexity benchmark for dense QuaRot checkpoints."""
 import argparse
 import gc
 import json
-import math
 import sys
 from pathlib import Path
 import torch
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-import transformers
-from e2e.model_registry import runtime_types
 from e2e.checkpoint_utils.data_utils import get_loaders
+from e2e.model_registry import runtime_types
 
-def tokens(batch, length, vocab, device):
-    values = torch.arange(batch * length, device=device).reshape(batch, length)
-    return values.remainder(max(vocab - 3, 1)).add(3).long()
 
-@torch.inference_mode()
-def snapshot(model, input_ids, decode_steps):
-    model._expected_max_length = input_ids.shape[1] + decode_steps
-    output = model(input_ids, use_cache=True)
-    result = [output.logits[:, -1].float().cpu()]
-    next_token = torch.full((input_ids.shape[0], 1), 100,
-                            dtype=torch.long, device=input_ids.device)
-    for _ in range(decode_steps):
-        output = model(next_token, past_key_values=output.past_key_values,
-                       use_cache=True)
-        result.append(output.logits[:, -1].float().cpu())
-    return result
+def model_input_device(model):
+    return model.get_input_embeddings().weight.device
 
-def metrics(actual, expected):
-    delta = actual - expected
-    return {
-        "max_abs": float(delta.abs().max()),
-        "mean_abs": float(delta.abs().mean()),
-        "cosine": float(torch.nn.functional.cosine_similarity(
-            actual, expected).mean()),
-        "top_token_agreement": float(
-            (actual.argmax(-1) == expected.argmax(-1)).float().mean()),
-        "finite": bool(torch.isfinite(actual).all()),
-    }
 
-@torch.inference_mode()
-def perplexity(model, input_ids, chunk):
-    total_nll, total_tokens = 0.0, 0
-    for start in range(0, input_ids.shape[1] - 1, chunk):
-        stop = min(start + chunk, input_ids.shape[1] - 1)
-        window = input_ids[:, start:stop + 1]
-        logits = model(window, use_cache=False).logits[:, :-1].float()
-        labels = window[:, 1:]
-        total_nll += torch.nn.functional.cross_entropy(
-            logits.reshape(-1, logits.shape[-1]), labels.reshape(-1),
-            reduction="sum").item()
-        total_tokens += labels.numel()
-    return math.exp(total_nll / total_tokens)
+def cleanup():
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
-@torch.inference_mode()
-def dataset_metrics(actual_model, reference_model, input_ids, chunk, expected_chunks=None):
-    totals = {
-        "positions": 0, "logits": 0,
-        "actual_nll": 0.0, "reference_nll": 0.0,
-        "cosine": 0.0, "kl_reference_to_int4": 0.0,
-        "mean_abs": 0.0, "top1": 0, "reference_top1_in_actual_top5": 0,
-        "top5_overlap": 0.0, "max_abs": 0.0,
-    }
-    finite = True
-    chunks = 0
-    for start in range(0, input_ids.shape[1] - 1, chunk):
-        stop = min(start + chunk, input_ids.shape[1] - 1)
-        window = input_ids[:, start:stop + 1]
-        labels = window[:, 1:]
-        actual = actual_model(window, use_cache=False).logits[:, :-1].float()
-        if expected_chunks is None:
-            expected = reference_model(window, use_cache=False).logits[:, :-1].float()
-        else:
-            expected = expected_chunks[chunks].to(actual.device)
-        flat_actual = actual.reshape(-1, actual.shape[-1])
-        flat_expected = expected.reshape(-1, expected.shape[-1])
-        flat_labels = labels.reshape(-1)
-        positions = flat_labels.numel()
-        delta = flat_actual - flat_expected
 
-        totals["actual_nll"] += torch.nn.functional.cross_entropy(
-            flat_actual, flat_labels, reduction="sum").item()
-        totals["reference_nll"] += torch.nn.functional.cross_entropy(
-            flat_expected, flat_labels, reduction="sum").item()
-        totals["cosine"] += torch.nn.functional.cosine_similarity(
-            flat_actual, flat_expected, dim=-1).sum().item()
-        actual_logp = torch.nn.functional.log_softmax(flat_actual, dim=-1)
-        expected_logp = torch.nn.functional.log_softmax(flat_expected, dim=-1)
-        totals["kl_reference_to_int4"] += (
-            expected_logp.exp() * (expected_logp - actual_logp)
-        ).sum(-1).sum().item()
-        totals["mean_abs"] += delta.abs().sum().item()
-        totals["max_abs"] = max(totals["max_abs"], float(delta.abs().max()))
+def model_layers(model):
+    return getattr(getattr(model, "model", None), "layers", ())
 
-        actual_top5 = flat_actual.topk(5, dim=-1).indices
-        expected_top5 = flat_expected.topk(5, dim=-1).indices
-        totals["top1"] += int(
-            (actual_top5[:, 0] == expected_top5[:, 0]).sum())
-        totals["reference_top1_in_actual_top5"] += int(
-            (actual_top5 == expected_top5[:, :1]).any(-1).sum())
-        overlap = (
-            actual_top5.unsqueeze(-1) == expected_top5.unsqueeze(-2)
-        ).any(-1).sum(-1)
-        totals["top5_overlap"] += overlap.float().sum().item()
-        totals["positions"] += positions
-        totals["logits"] += delta.numel()
-        finite = finite and bool(torch.isfinite(actual).all())
-        chunks += 1
 
-    positions = totals["positions"]
-    return {
-        "positions": positions,
-        "chunks": chunks,
-        "int4_perplexity": math.exp(totals["actual_nll"] / positions),
-        "reference_perplexity": math.exp(
-            totals["reference_nll"] / positions),
-        "mean_cosine": totals["cosine"] / positions,
-        "mean_kl_reference_to_int4": (
-            totals["kl_reference_to_int4"] / positions),
-        "mean_abs_logit_error": totals["mean_abs"] / totals["logits"],
-        "max_abs_logit_error": totals["max_abs"],
-        "top1_agreement": totals["top1"] / positions,
-        "reference_top1_in_int4_top5": (
-            totals["reference_top1_in_actual_top5"] / positions),
-        "mean_top5_overlap": totals["top5_overlap"] / (positions * 5),
-        "finite": finite,
-    }
+def set_synthetic_kv4(model, enabled):
+    """Enable paper-style synthetic KV4 on every QuaRot attention layer."""
+    for layer in model_layers(model):
+        layer.self_attn._synthetic_kv4 = enabled
+
+
+def synthetic_kv4_enabled(model):
+    return any(
+        getattr(layer.self_attn, "_synthetic_kv4", False)
+        for layer in model_layers(model))
+
 
 def load_int4(path):
     config_cls, int4_cls, _ = runtime_types(path, local_files_only=True)
@@ -137,155 +44,131 @@ def load_int4(path):
     return int4_cls.from_pretrained(
         path, config=config, torch_dtype=torch.float16, local_files_only=True)
 
-def load_reference(path, *, device_map=None, max_memory=None,
-                   offload_folder=None, offload_state_dict=True):
-    if device_map is not None:
-        # The QuaRot FP16 wrapper always calls FlashAttention, which cannot
-        # execute layers assigned to CPU. The standard dense model with SDPA
-        # is numerically equivalent and supports mixed GPU/CPU/disk dispatch.
-        return transformers.AutoModelForCausalLM.from_pretrained(
-            path, torch_dtype=torch.float16, attn_implementation="sdpa",
-            device_map=device_map, max_memory=max_memory,
-            offload_folder=offload_folder,
-            offload_state_dict=offload_state_dict,
-            low_cpu_mem_usage=True)
+
+def load_reference(path):
     _, _, fp16_cls = runtime_types(path)
     return fp16_cls.from_pretrained(
         path, torch_dtype=torch.float16,
         attn_implementation="flash_attention_2")
 
 
-def cleanup():
-    gc.collect()
-    torch.cuda.empty_cache()
-
-
-def model_input_device(model):
-    return model.get_input_embeddings().weight.device
-
-
 @torch.inference_mode()
-def snapshot_no_cache(model, input_ids, decode_steps):
-    sequence = input_ids
-    result = []
-    for step in range(decode_steps + 1):
-        output = model(sequence, use_cache=False)
-        result.append(output.logits[:, -1].float().cpu())
-        if step != decode_steps:
-            next_token = torch.full(
-                (sequence.shape[0], 1), 100, dtype=torch.long,
-                device=sequence.device)
-            sequence = torch.cat((sequence, next_token), dim=1)
-        del output
-    return result
-
-
-@torch.inference_mode()
-def collect_dataset_logits(model, input_ids, chunk):
-    result = []
+def full_perplexity(model, input_ids, context_length, batch_size=1):
+    """Evaluate complete blocks with full-sequence causal forwards."""
+    if input_ids.ndim != 2 or input_ids.shape[0] != 1:
+        raise ValueError("full perplexity expects a [1, tokens] tensor")
+    if context_length < 2 or batch_size < 1:
+        raise ValueError("context_length >= 2 and batch_size >= 1 required")
+    dataset_tokens = input_ids.numel()
+    block_count = dataset_tokens // context_length
+    if not block_count:
+        raise ValueError(
+            f"dataset has {dataset_tokens} tokens, fewer than one "
+            f"{context_length}-token block")
+    used_tokens = block_count * context_length
+    blocks = input_ids[:, :used_tokens].reshape(block_count, context_length)
+    sequence_nlls = []
+    total_nll, scored_tokens = 0.0, 0
     device = model_input_device(model)
-    for start in range(0, input_ids.shape[1] - 1, chunk):
-        stop = min(start + chunk, input_ids.shape[1] - 1)
-        window = input_ids[:, start:stop + 1].to(device)
-        result.append(model(window, use_cache=False).logits[:, :-1].float().cpu())
-    return result
+    loss_function = torch.nn.CrossEntropyLoss(reduction="none")
+    for start in range(0, block_count, batch_size):
+        block = blocks[start:start + batch_size].to(device)
+        logits = model(block, use_cache=False).logits[:, :-1].float()
+        labels = block[:, 1:]
+        losses = loss_function(logits.permute(0, 2, 1), labels)
+        sequence_nlls.append(losses.float().mean(dim=1).cpu())
+        total_nll += losses.double().sum().item()
+        scored_tokens += labels.numel()
+        del block, logits, labels, losses
+    mean_nll_tensor = torch.cat(sequence_nlls).mean()
+    return {
+        "perplexity": torch.exp(mean_nll_tensor).item(),
+        "mean_nll": mean_nll_tensor.item(), "total_nll": total_nll,
+        "scored_tokens": scored_tokens, "block_count": block_count,
+        "context_length": context_length, "batch_size": batch_size,
+        "dataset_tokens": dataset_tokens, "used_input_tokens": used_tokens,
+        "truncated_tail_tokens": dataset_tokens - used_tokens,
+        "execution": "full_sequence_no_cache",
+        "kv_precision": (
+            "synthetic_int4" if synthetic_kv4_enabled(model)
+            else "float16"),
+    }
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--int4-model", required=True)
-    parser.add_argument("--reference-model", required=True)
-    parser.add_argument("--batch-size", type=int, default=1)
-    parser.add_argument("--prefill", type=int, default=32)
-    parser.add_argument("--decode-steps", type=int, default=4)
-    parser.add_argument("--dataset", choices=("wikitext2", "ptb", "c4"), default="wikitext2")
+    parser.add_argument("--int4-model", required=True,
+                        help="converted packed INT4 checkpoint directory")
+    parser.add_argument("--reference-model", required=True,
+                        help="base Hugging Face model used during conversion")
+    parser.add_argument("--dataset", choices=("wikitext2", "ptb", "c4"),
+                        default="wikitext2")
     parser.add_argument("--hf-token")
-    parser.add_argument("--ppl-tokens", type=int, default=512)
-    parser.add_argument("--ppl-chunk", type=int, default=128)
+    parser.add_argument("--context-length", type=int, default=2048)
+    parser.add_argument("--ppl-batch-size", type=int, default=1)
+    parser.add_argument(
+        "--kv-cache-dtype", choices=("int4", "float16"), default="int4",
+        help=("KV precision for PPL: paper-style synthetic INT4 QDQ or "
+              "unquantized FP16 K/V (default: int4)."))
+    parser.add_argument("--skip-reference", action="store_true")
     parser.add_argument("--output", type=Path,
-                        default=Path("accuracy_results.json"))
-    parser.add_argument(
-        "--sequential-low-vram", action="store_true",
-        help="Run an offloaded FP16 reference pass first, unload it, then run "
-             "INT4 so both models are never resident on the GPU together.")
-    parser.add_argument("--reference-max-gpu-memory", default="16GiB")
-    parser.add_argument("--reference-max-cpu-memory", default="40GiB")
-    parser.add_argument(
-        "--offload-folder", type=Path,
-        default=Path("/tmp/quarot-reference-offload"))
-    parser.add_argument(
-        "--reference-disk-offload", action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Allow reference weights/state to spill to --offload-folder "
-             "(default: enabled). Disable only when GPU+CPU budgets cover "
-             "the complete reference checkpoint.")
+                        default=Path("benchmark_results/accuracy/accuracy_results.json"))
     args = parser.parse_args()
-    if args.ppl_tokens < 2 or args.ppl_chunk < 1:
-        parser.error("--ppl-tokens must be at least 2 and --ppl-chunk positive")
-    device = torch.device("cuda")
-    evaluation = get_loaders(
-        args.dataset, seed=0,
-        model=args.reference_model,
-        seqlen=args.ppl_chunk, hf_token=args.hf_token, eval_mode=True)
-    ppl_ids_cpu = evaluation.input_ids[:, :args.ppl_tokens].cpu()
+    if not torch.cuda.is_available():
+        parser.error("packed INT4 kernels require a CUDA/HIP device")
+    if args.context_length < 2 or args.ppl_batch_size < 1:
+        parser.error("invalid context length or batch size")
 
-    if args.sequential_low_vram:
-        args.offload_folder.mkdir(parents=True, exist_ok=True)
-        reference = load_reference(
-            args.reference_model, device_map="auto",
-            max_memory={
-                0: args.reference_max_gpu_memory,
-                "cpu": args.reference_max_cpu_memory,
-            },
-            offload_folder=(str(args.offload_folder)
-                            if args.reference_disk_offload else None),
-            offload_state_dict=args.reference_disk_offload).eval()
-        reference_device = model_input_device(reference)
-        reference_ids = tokens(
-            args.batch_size, args.prefill,
-            reference.config.vocab_size, reference_device)
-        expected = snapshot_no_cache(
-            reference, reference_ids, args.decode_steps)
-        expected_chunks = collect_dataset_logits(
-            reference, ppl_ids_cpu, args.ppl_chunk)
-        del reference, reference_ids
-        cleanup()
-
-        int4 = load_int4(args.int4_model).cuda().eval()
-        input_ids = tokens(
-            args.batch_size, args.prefill, int4.config.vocab_size, device)
-        actual = snapshot_no_cache(int4, input_ids, args.decode_steps)
-        dataset_evaluation = dataset_metrics(
-            int4, None, ppl_ids_cpu.to(device), args.ppl_chunk,
-            expected_chunks=expected_chunks)
-    else:
-        int4 = load_int4(args.int4_model).cuda().eval()
+    encoded = get_loaders(
+        args.dataset, seed=0, model=args.reference_model,
+        seqlen=args.context_length, hf_token=args.hf_token, eval_mode=True)
+    input_ids = encoded.input_ids.cpu()
+    reference_eval = None
+    if not args.skip_reference:
         reference = load_reference(args.reference_model).cuda().eval()
-        input_ids = tokens(args.batch_size, args.prefill,
-                           int4.config.vocab_size, device)
-        actual = snapshot(int4, input_ids, args.decode_steps)
-        expected = snapshot(reference, input_ids, args.decode_steps)
-        dataset_evaluation = dataset_metrics(
-            int4, reference, ppl_ids_cpu.to(device), args.ppl_chunk)
+        reference_eval = full_perplexity(
+            reference, input_ids, args.context_length, args.ppl_batch_size)
+        del reference
+        cleanup()
+    int4 = load_int4(args.int4_model)
+    set_synthetic_kv4(int4, args.kv_cache_dtype == "int4")
+    int4 = int4.cuda().eval()
+    int4_eval = full_perplexity(
+        int4, input_ids, args.context_length, args.ppl_batch_size)
+
+    perplexity = {"int4": int4_eval["perplexity"]}
+    full_result = {"int4": int4_eval}
+    if reference_eval is not None:
+        ratio = int4_eval["perplexity"] / reference_eval["perplexity"]
+        perplexity.update(reference=reference_eval["perplexity"], ratio=ratio)
+        full_result.update(reference=reference_eval, ratio=ratio)
     result = {
-        "configuration": vars(args) | {
-            "output": str(args.output),
-            "offload_folder": str(args.offload_folder),
-        },
+        "configuration": {
+            "int4_model": args.int4_model, "reference_model": args.reference_model,
+            "dataset": args.dataset, "context_length": args.context_length,
+            "ppl_batch_size": args.ppl_batch_size,
+            "kv_cache_dtype": args.kv_cache_dtype,
+            "skip_reference": args.skip_reference, "output": str(args.output)},
         "model_type": int4.config.model_type,
-        "logit_comparison": [
-            {"phase": "prefill" if i == 0 else f"decode_{i}",
-             **metrics(a, e)}
-            for i, (a, e) in enumerate(zip(actual, expected))],
-        "dataset_evaluation": dataset_evaluation,
-        "perplexity": {
-            "int4": dataset_evaluation["int4_perplexity"],
-            "reference": dataset_evaluation["reference_perplexity"],
-        },
-    }
-    result["perplexity"]["ratio"] = (
-        result["perplexity"]["int4"] / result["perplexity"]["reference"])
+        "evaluation_protocol": {
+            "kind": "full_corpus_non_overlapping_fake_quant",
+            "dataset": args.dataset,
+            "tail_policy": "truncate_incomplete_block",
+            "nll_aggregation": "mean_per_sequence_then_mean_sequences",
+            "execution": "full_sequence_no_cache",
+            "context_preserved_across_blocks": False,
+            "kv_precision": (
+                "synthetic_int4" if args.kv_cache_dtype == "int4"
+                else "float16"),
+            "kv_quantization": (
+                "symmetric_per_token_qdq" if args.kv_cache_dtype == "int4"
+                else "none"),
+            "k_hadamard_after_rope": args.kv_cache_dtype == "int4"},
+        "full_perplexity": full_result, "perplexity": perplexity}
+    args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps(result, indent=2))
+
 
 if __name__ == "__main__":
     main()

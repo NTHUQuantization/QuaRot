@@ -2,6 +2,8 @@
 
 #include <torch/extension.h>
 
+const char* fused_fht_backend();
+
 torch::Tensor fused_rope_append_kv_i4(
     torch::Tensor query, torch::Tensor key, torch::Tensor value,
     torch::Tensor cos, torch::Tensor sin, torch::Tensor kv_data,

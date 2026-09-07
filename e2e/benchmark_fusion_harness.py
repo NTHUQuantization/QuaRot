@@ -199,6 +199,9 @@ def main():
     parser.add_argument("--context-lengths", default="10,128,1024,2048,4096")
     parser.add_argument("--warmup", type=int, default=1)
     parser.add_argument(
+        "--kv-cache-dtype", choices=("int4", "float16"), default="int4",
+        help="KV-cache storage used by the packed model (default: int4).")
+    parser.add_argument(
         "--decode-steps", default="3",
         help="Comma-separated timed decode horizons; each result is ms/step.")
     parser.add_argument("--repeats", type=int, default=3)
@@ -211,7 +214,8 @@ def main():
         help="Map direct checkpoint down_proj tensors into legacy down_proj[2].")
     parser.add_argument("--local-files-only", action="store_true")
     parser.add_argument(
-        "--output", default="fusion_harness_local_results.json")
+        "--output", type=Path,
+        default=Path("benchmark_results/performance/fusion/fusion_harness_local_results.json"))
     args = parser.parse_args()
     decode_steps = parse_ints(args.decode_steps)
     if args.warmup < 0 or args.repeats <= 0 or not decode_steps or min(decode_steps) <= 0:
@@ -222,7 +226,9 @@ def main():
         args.model, local_files_only=args.local_files_only)
     tokenizer = AutoTokenizer.from_pretrained(
         tokenizer_model, local_files_only=args.local_files_only)
-    model = load_int4(args.model).eval()
+    model = load_int4(args.model)
+    model.cache_dtype = args.kv_cache_dtype
+    model = model.eval()
     if args.remap_legacy_down_proj:
         copied = remap_legacy_down_projections(model, args.model)
         expected = 2 * len(model.model.layers)
@@ -246,7 +252,8 @@ def main():
         "cuda_graph": args.cuda_graph,
         "measurements": [],
     }
-    output = Path(args.output)
+    output = args.output
+    output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(results, indent=2) + "\n")
     for batch in parse_ints(args.batches):
         for context_len in parse_ints(args.context_lengths):

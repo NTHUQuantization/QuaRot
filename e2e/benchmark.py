@@ -18,9 +18,9 @@ model_configs = [
     # "meta-llama/Llama-2-7b-hf",
     # "meta-llama/Llama-2-13b-hf",
     # "meta-llama/CodeLlama-34b-hf",
-    # "Qwen/Qwen3-32B",
+    "Qwen/Qwen3-32B",
     # "Qwen/Qwen2.5-32B",
-    "meta-llama/Llama-3.1-8B",
+    # "meta-llama/Llama-3.1-8B",
 ]
 
 benchmark_dtypes = ["int4", torch.float16]
@@ -104,7 +104,7 @@ def get_model_fp16(config_name):
 def run_prefill(model, bsz, prefill_length):
     device = model.device
     test_input = torch.randint(100, 200, (bsz, prefill_length), dtype=torch.int32, device=device)
-    return module_benchmark(lambda: model(test_input, use_cache=False))
+    return module_benchmark(lambda: model(test_input, use_cache=True))
 
 
 def run_decode(model, bsz, prefill_length, decode_steps):
@@ -172,6 +172,7 @@ def benchmark(args):
 
     for config_name in model_configs:
         model = get_model_quantized(config_name)
+        model.cache_dtype = args.kv_cache_dtype
         time_prefill_i4, time_decode_i4, time_e2e_i4, mem_i4 = run_all_for_model(
             model, args.batch_size, args.prefill_seq_len, args.decode_steps)
         del model
@@ -234,6 +235,9 @@ if __name__ == '__main__':
         required=False,
         default=None,
     )
+    parser.add_argument(
+        '--kv_cache_dtype', '--kv-cache-dtype', choices=('int4', 'float16'),
+        default='int4', help='KV-cache storage for the INT4 model.')
     parser.add_argument(
         '--int4_only', '--int4-only', action='store_true',
         help='Benchmark only INT4 and do not load the FP16 comparison model.',

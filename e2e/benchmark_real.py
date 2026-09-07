@@ -200,6 +200,9 @@ def main():
         help="Benchmark and validate only the real INT4 checkpoint; do not "
              "load the FP16 reference model.")
     parser.add_argument("--batch-size", type=int, default=1)
+    parser.add_argument(
+        "--kv-cache-dtype", choices=("int4", "float16"), default="int4",
+        help="KV-cache storage used by the packed model (default: int4).")
     parser.add_argument("--prefill-seq-len", type=int, default=2048)
     parser.add_argument("--decode-steps", type=int, default=128)
     parser.add_argument("--warmup", type=int, default=3)
@@ -207,8 +210,11 @@ def main():
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument("--correctness-prefill", type=int, default=16)
     parser.add_argument("--correctness-decode", type=int, default=2)
-    parser.add_argument("--output", default="benchmark_real_results.json")
+    parser.add_argument(
+        "--output",
+        default="benchmark_results/performance/real/benchmark_real_results.json")
     args = parser.parse_args()
+    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     if not args.int4_only and not args.fp16_model:
         parser.error("--fp16-model is required unless --int4-only is used")
     if min(args.batch_size, args.prefill_seq_len, args.decode_steps,
@@ -229,6 +235,7 @@ def main():
     }
 
     int4 = load_int4(args.int4_model)
+    int4.cache_dtype = args.kv_cache_dtype
     layers = list(int4.model.layers)
     prefill_probe = torch.empty(1, args.prefill_seq_len, 1)
     decode_probe = torch.empty(1, 1, 1)
@@ -239,7 +246,8 @@ def main():
             layer.mlp._should_use_fused_ffn(prefill_probe) for layer in layers),
         "ffn_decode_all_layers": all(
             layer.mlp._should_use_fused_ffn(decode_probe) for layer in layers),
-        "kv_decode_append_after_prefill": int4.cache_dtype == "int4",
+        "kv_decode_append_after_prefill": True,
+        "kv_cache_dtype": int4.cache_dtype,
     }
     results["int4_checkpoint_validation"] = validate_int4_checkpoint(int4, args.int4_model)
     int4.cuda().eval()

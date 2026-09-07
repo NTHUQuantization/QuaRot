@@ -547,6 +547,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m
 )
 {
 
+    m.def("fht_backend", &fused_fht_backend,
+          "Return the compile-time fused FHT backend");
     m.def("matmul", &matmul,
           "input: (A: torch.Tensor(M x K, UINT8, CUDA), B: torch.Tensor(N x K, "
           "UINT8, CUDA))\n"

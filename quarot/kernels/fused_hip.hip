@@ -15,6 +15,13 @@
 #include <fused.h>
 #include <hadamard_wmma.cuh>
 
+#ifndef QUAROT_FHT_BACKEND
+#define QUAROT_FHT_BACKEND 0
+#endif
+#define QUAROT_FHT_HADACORE 0
+#define QUAROT_FHT_FAST_OP 1
+#define QUAROT_FHT_NAIVE 2
+
 namespace {
 
 constexpr int kThreads = 256;
@@ -116,33 +123,103 @@ __device__ __forceinline__ void hadacore_warp_hadamard_regs(
   }
 }
 
+// Reference-ordered H128 for fused K-cache rotation. One wave owns a row:
+// each lane holds indices lane + {0,32,64,96}. H32 is performed with wave
+// shuffles, followed by the outer H4 entirely in registers. This avoids the
+// standalone Hadacore H128 transpose-layout defect and all seven LDS stages.
+__device__ __forceinline__ void hadacore_h128_inplace(float* values) {
+  const int lane = threadIdx.x & 31;
+  if (threadIdx.x < 32) {
+    float registers[4];
+#pragma unroll
+    for (int r = 0; r < 4; ++r) registers[r] = values[lane + r * 32];
+#pragma unroll
+    for (int mask = 1; mask < 32; mask <<= 1) {
+#pragma unroll
+      for (int r = 0; r < 4; ++r) {
+        const float a = registers[r];
+        const float b = hadacore_shfl_xor_f32(a, mask);
+        registers[r] = (lane & mask) == 0 ? a + b : b - a;
+      }
+    }
+    const float a0 = registers[0], a1 = registers[1];
+    const float a2 = registers[2], a3 = registers[3];
+    const float b0 = a0 + a1, b1 = a0 - a1;
+    const float b2 = a2 + a3, b3 = a2 - a3;
+    registers[0] = b0 + b2;
+    registers[1] = b1 + b3;
+    registers[2] = b0 - b2;
+    registers[3] = b1 - b3;
+#pragma unroll
+    for (int r = 0; r < 4; ++r) values[lane + r * 32] = registers[r];
+  }
+  __syncthreads();
+}
+
 __device__ __forceinline__ void hadamard(float* values, int width) {
+#if QUAROT_FHT_BACKEND == QUAROT_FHT_HADACORE
+  if (width == 128) {
+    hadacore_h128_inplace(values);
+    return;
+  }
+#endif
+#if QUAROT_FHT_BACKEND == QUAROT_FHT_NAIVE
+  if (threadIdx.x == 0) {
+    for (int stride = 1; stride < width; stride <<= 1) {
+      for (int pair = 0; pair < width / 2; ++pair) {
+        const int low = ((pair / stride) * (stride << 1)) +
+                        (pair & (stride - 1));
+        const float a = values[low], b = values[low + stride];
+        values[low] = a + b;
+        values[low + stride] = a - b;
+      }
+    }
+  }
+  __syncthreads();
+#else
+  // Same workgroup-parallel LDS butterfly as upstream fast_hadamard_op.
   for (int stride = 1; stride < width; stride <<= 1) {
     for (int pair = threadIdx.x; pair < width / 2; pair += blockDim.x) {
-      int low = ((pair / stride) * (stride << 1)) + (pair & (stride - 1));
-      float a = values[low];
-      float b = values[low + stride];
+      const int low = ((pair / stride) * (stride << 1)) +
+                      (pair & (stride - 1));
+      const float a = values[low], b = values[low + stride];
       values[low] = a + b;
       values[low + stride] = a - b;
     }
     __syncthreads();
   }
+#endif
 }
 
 template <int Width>
 __device__ __forceinline__ void hadamard_fixed(float* values) {
+#if QUAROT_FHT_BACKEND == QUAROT_FHT_NAIVE
+  if (threadIdx.x == 0) {
+#pragma unroll
+    for (int stride = 1; stride < Width; stride <<= 1) {
+      for (int pair = 0; pair < Width / 2; ++pair) {
+        const int low = ((pair / stride) * (stride << 1)) +
+                        (pair & (stride - 1));
+        const float a = values[low], b = values[low + stride];
+        values[low] = a + b;
+        values[low + stride] = a - b;
+      }
+    }
+  }
+  __syncthreads();
+#else
 #pragma unroll
   for (int stride = 1; stride < Width; stride <<= 1) {
     for (int pair = threadIdx.x; pair < Width / 2; pair += blockDim.x) {
       const int low = ((pair / stride) * (stride << 1)) +
                       (pair & (stride - 1));
-      const float a = values[low];
-      const float b = values[low + stride];
+      const float a = values[low], b = values[low + stride];
       values[low] = a + b;
       values[low + stride] = a - b;
     }
     __syncthreads();
   }
+#endif
 }
 
 template <int Inner>
@@ -283,7 +360,8 @@ __global__ void fused_attention_hadamard_quant_kernel(
   const int row = blockIdx.x;
   const int width = num_heads * head_dim;
   if (row >= rows) return;
-  if (num_heads == 32 || num_heads == 64) {
+  if ((num_heads == 32 || num_heads == 64) &&
+      QUAROT_FHT_BACKEND == QUAROT_FHT_HADACORE) {
     const int lane = threadIdx.x & 31;
     const int wave = threadIdx.x >> 5;
     const int waves = blockDim.x >> 5;
@@ -318,6 +396,20 @@ __global__ void fused_attention_hadamard_quant_kernel(
     __syncthreads();
     for (int d = 0; d < head_dim; ++d) {
       float* group = values + d * num_heads;
+#if QUAROT_FHT_BACKEND == QUAROT_FHT_NAIVE
+      if (threadIdx.x == 0) {
+        for (int stride = 1; stride < num_heads; stride <<= 1) {
+          for (int pair = 0; pair < num_heads / 2; ++pair) {
+            const int low = ((pair / stride) * (stride << 1)) +
+                            (pair & (stride - 1));
+            const float a = group[low], b = group[low + stride];
+            group[low] = a + b;
+            group[low + stride] = a - b;
+          }
+        }
+      }
+      __syncthreads();
+#else
       for (int stride = 1; stride < num_heads; stride <<= 1) {
         for (int pair = threadIdx.x; pair < num_heads / 2; pair += blockDim.x) {
           int low = ((pair / stride) * (stride << 1)) + (pair & (stride - 1));
@@ -328,6 +420,7 @@ __global__ void fused_attention_hadamard_quant_kernel(
         }
         __syncthreads();
       }
+#endif
     }
   }
   const float norm = rsqrtf(float(num_heads));
@@ -564,6 +657,16 @@ bool power_of_two(int64_t x) { return x > 0 && (x & (x - 1)) == 0; }
 
 }  // namespace
 
+const char* fused_fht_backend() {
+#if QUAROT_FHT_BACKEND == QUAROT_FHT_HADACORE
+  return "hadacore";
+#elif QUAROT_FHT_BACKEND == QUAROT_FHT_FAST_OP
+  return "fast_op";
+#else
+  return "naive";
+#endif
+}
+
 torch::Tensor fused_rope_append_kv_i4(
     torch::Tensor query, torch::Tensor key, torch::Tensor value,
     torch::Tensor cos, torch::Tensor sin, torch::Tensor kv_data,
@@ -742,7 +845,8 @@ std::vector<torch::Tensor> fused_ffn_silu_hadamard_quant_grouped256(
   auto scales = torch::empty(scale_shape, gate.options());
   at::hip::HIPGuard guard{static_cast<char>(gate.get_device())};
   auto stream = at::hip::getCurrentHIPStream().stream();
-  if (rows > 1 || width >= 14336) {
+  if (QUAROT_FHT_BACKEND == QUAROT_FHT_HADACORE &&
+      (rows > 1 || width >= 14336)) {
     hipLaunchKernelGGL(fused_ffn_silu_hadamard_quant_hadacore256_kernel,
       dim3(rows, width / 256), dim3(32), 0, stream,
       reinterpret_cast<const half*>(gate.data_ptr<at::Half>()),

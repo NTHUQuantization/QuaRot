@@ -6,6 +6,13 @@ from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 
 
 setup_dir = os.path.dirname(os.path.realpath(__file__))
+fht_backends = {"hadacore": 0, "fast_op": 1, "naive": 2}
+fht_backend = os.environ.get("QUAROT_FHT_BACKEND", "hadacore")
+if fht_backend not in fht_backends:
+    raise ValueError(
+        f"QUAROT_FHT_BACKEND must be one of {tuple(fht_backends)}, got {fht_backend!r}")
+fht_define = f"-DQUAROT_FHT_BACKEND={fht_backends[fht_backend]}"
+
 
 # Build for the project's primary target unless the caller requests others.
 os.environ["PYTORCH_ROCM_ARCH"] = os.environ.get(
@@ -52,12 +59,14 @@ if __name__ == '__main__':
                     "cxx": [
                         "-O3",
                         "-std=c++17",
+                        fht_define,
                     ],
                     "nvcc": [
                         "-O3",
                         # Host-side dispatch also needs this definition; HIP
                         # architecture macros are device-pass-only.
                         "-DQUAROT_BPRE_GFX12=1",
+                        fht_define,
                         # PyTorch may add these flags after COMMON_HIP_FLAGS
                         # has been edited, so undefine them here as well.
                         "-U__HIP_NO_HALF_OPERATORS__",

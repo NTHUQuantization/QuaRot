@@ -13,4 +13,7 @@ CMakeCache.txt
 *.egg
 Makefile
 docs/*
-scripts/*
+artifacts/*
+original_quarot/*
+benchmark_results/*
+ref/*

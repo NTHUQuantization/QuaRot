@@ -85,8 +85,9 @@ def main():
     parser.add_argument("--iterations", type=int, default=100)
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--warmup", type=int, default=20)
-    parser.add_argument("--output", type=Path, default=Path("benchmark_results.json"))
+    parser.add_argument("--output", type=Path, default=Path("benchmark_results/performance/misc/fused_kernels_audit.json"))
     args = parser.parse_args()
+    args.output.parent.mkdir(parents=True, exist_ok=True)
     if torch.version.hip is None or not torch.cuda.is_available():
         raise RuntimeError("ROCm GPU required")
     torch.manual_seed(20260802)
