@@ -1,4 +1,4 @@
-"""Accuracy coverage for Hadacore shapes used by benchmark.py models."""
+"""Accuracy coverage for Hadacore shapes used by supported model families."""
 import math
 
 import pytest

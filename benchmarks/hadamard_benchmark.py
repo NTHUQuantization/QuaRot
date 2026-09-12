@@ -1,5 +1,5 @@
-import fast_hadamard_transform
 import torch
+import fast_hadamard_transform
 import time
 for i in [1024, 2048, 4096, 4096*2, 4096*3]:
     x = torch.rand(i, i).cuda().to(torch.float16)

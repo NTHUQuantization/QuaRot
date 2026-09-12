@@ -35,14 +35,14 @@ def hadamard_reference(x):
 def attention_reference(attention):
     rotated = hadamard_reference(attention.transpose(-1, -2).contiguous()).transpose(-1, -2)
     flat = rotated.reshape(rotated.size(0), rotated.size(1), -1)
-    scale = (flat.abs().amax(dim=-1, keepdim=True) / 7).half()
+    scale = (flat.abs().amax(dim=-1, keepdim=True) / 7).half().clamp_min(torch.finfo(torch.float16).tiny)
     return torch.round(flat / scale).clamp(-8, 7).to(torch.int8)
 
 
 def ffn_reference(gate, up):
     value = torch.nn.functional.silu(gate) * up
     value = hadamard_reference(value.reshape(*value.shape[:-1], -1, 256)).reshape_as(value)
-    scale = (value.reshape(*value.shape[:-1], -1, 256).abs().amax(-1) / 7).half()
+    scale = (value.reshape(*value.shape[:-1], -1, 256).abs().amax(-1) / 7).half().clamp_min(torch.finfo(torch.float16).tiny)
     return torch.round(value / scale.repeat_interleave(256, -1)).clamp(-8, 7).to(torch.int8)
 
 

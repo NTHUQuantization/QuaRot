@@ -13,7 +13,8 @@ import torch
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from e2e.benchmark_real import deterministic_tokens, load_int4, validate_int4_checkpoint
+from e2e.real_checkpoint import (
+    deterministic_tokens, load_int4, validate_int4_checkpoint)
 
 
 def measure(fn, warmup, repeats):
@@ -65,6 +66,8 @@ def main():
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
 
     if args.warmup < 0 or args.repeats <= 0:
         parser.error("--warmup must be nonnegative and --repeats positive")
@@ -122,7 +125,7 @@ def main():
                 results["cases"].append(case)
                 print(f"{args.backend}: B={batch} S={sequence} skipped: {error}", flush=True)
             cleanup()
-            Path(args.output).write_text(json.dumps(results, indent=2) + "\n")
+            output.write_text(json.dumps(results, indent=2) + "\n")
 
 
 if __name__ == "__main__":

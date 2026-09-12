@@ -168,7 +168,9 @@ def main():
     payload = {"mode": args.mode, "configuration": vars(args), "rows": rows,
                "environment": {"torch": torch.__version__, "hip": torch.version.hip,
                                "gpu": torch.cuda.get_device_properties(0).gcnArchName}}
-    Path(args.output).write_text(json.dumps(payload, indent=2) + "\n")
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(payload, indent=2) + "\n")
 
 if __name__ == "__main__":
     main()

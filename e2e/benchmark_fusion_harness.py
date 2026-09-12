@@ -13,10 +13,10 @@ from transformers import AutoTokenizer
 import quarot
 
 try:
-    from e2e.benchmark_real import load_int4
+    from e2e.real_checkpoint import load_int4
     from e2e.model_registry import tokenizer_source
 except ImportError:
-    from benchmark_real import load_int4
+    from real_checkpoint import load_int4
     from model_registry import tokenizer_source
 
 

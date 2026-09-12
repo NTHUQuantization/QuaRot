@@ -8,4 +8,5 @@ sentencepiece==0.2.0
 numpy==2.1.2
 tqdm==4.67.1
 peft==0.7.1
+safetensors==0.7.0
 lm-eval @ git+https://github.com/EleutherAI/lm-evaluation-harness.git@9b0b15b1ccace3534ffbd13298c569869ce8eaf3

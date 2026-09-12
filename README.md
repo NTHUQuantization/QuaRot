@@ -30,6 +30,25 @@ Hugging Face model is required for conversion and for the FP16 reference runs.
 
 Generation, performance, and downstream benchmarks use the packed model's INT4 KV cache by default. The accuracy benchmark instead uses paper-style synthetic KV4 by default. Pass `--kv-cache-dtype float16` to select FP16 K/V for the applicable benchmark.
 
+## Supported models
+
+The current conversion and fused real-checkpoint benchmark support these model
+configurations:
+
+- `meta-llama/Llama-2-7b-hf`
+- `meta-llama/Llama-2-13b-hf`
+- `meta-llama/CodeLlama-34b-hf`
+- `meta-llama/Llama-3.1-8B`
+- `Qwen/Qwen2.5-32B`
+- `Qwen/Qwen3-32B`
+
+`e2e/benchmark_real_multi_runtime.py` selects the appropriate Llama, Qwen2, or
+Qwen3 runtime from the checkpoint configuration.
+`e2e/benchmark_real_llama_runtime.py` directly selects the Llama-only runtime. 
+
+Both require a locally converted packed checkpoint for `--int4-model`; the optional
+`--fp16-model` can be either a local checkpoint or a Hugging Face model ID.
+
 ## Generate an INT4 checkpoint
 
 ### RTN
@@ -72,10 +91,12 @@ python e2e/benchmark_fusion_harness.py \
   --output benchmark_results/performance/fusion/llama3_8b_fusion.json
 ```
 
-## Real INT4 versus FP16 benchmark
+## Real INT4 versus FP16 benchmarks
+
+### Multi-runtime benchmark
 
 ```bash
-python e2e/benchmark_real.py \
+python e2e/benchmark_real_multi_runtime.py \
   --int4-model /models/quarot-llama-3.1-8b-gptq-int4 \
   --fp16-model meta-llama/Llama-3.1-8B \
   --batch-size 1 \
@@ -85,8 +106,31 @@ python e2e/benchmark_real.py \
 ```
 
 Add `--int4-only` when the FP16 reference does not fit in GPU memory. This
-still validates the packed checkpoint and fused dispatch, but it cannot report
-an INT4-to-FP16 speedup or numerical comparison.
+still validates and benchmarks the packed checkpoint, but it cannot report an
+INT4-to-FP16 speedup or memory reduction.
+
+### Portable Llama-runtime only benchmark
+
+Use the Llama-only harness to benchmark a real packed Llama checkpoint with
+the same workload and measurement protocol as the multi-runtime benchmark:
+
+```bash
+python e2e/benchmark_real_llama_runtime.py \
+  --int4-model /models/quarot-llama-2-7b-gptq-int4 \
+  --fp16-model meta-llama/Llama-2-7b-hf \
+  --batch-size 1 \
+  --prefill-seq-len 2048 \
+  --decode-steps 128 \
+  --output benchmark_results/performance/real/llama2_7b_portable.json
+```
+
+Its only difference with `e2e/benchmark_real_multi_runtime.py` is that it directly uses the Llama implementation and
+therefore does not support Qwen checkpoints and is compatible with previous implementation. 
+
+To run on previous implementation, copy `e2e/benchmark_real_llama_runtime.py` into an earlier implementation and run the same command there. The script then uses that implementation's older `e2e.quantized_llama.modeling_llama` implementation while
+keeping the benchmark protocol unchanged. 
+
+`--int4-only` and `--kv-cache-dtype float16` work here as described above.
 
 ## Full-perplexity accuracy benchmark
 
