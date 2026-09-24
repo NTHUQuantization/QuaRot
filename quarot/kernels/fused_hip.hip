@@ -68,9 +68,11 @@ __global__ void rms_norm_rows_kernel(
         __float2half(__half2float(input[row * width + column]) * inverse);
   }
 }
+template <bool ClipScale, bool AddResidual>
 __global__ void rms_norm_quant_i4_rows_kernel(
-    const half* input, uint8_t* packed, half* scales, int rows, int width,
-    float denominator, float eps) {
+    const half* input, const half* residual, half* residual_output,
+    uint8_t* packed, half* scales, int rows, int width,
+    float denominator, float eps, float clip_ratio) {
   __shared__ float reduce_scratch[kThreads];
   extern __shared__ half normalized[];
   const int row = blockIdx.x;
@@ -78,7 +80,16 @@ __global__ void rms_norm_quant_i4_rows_kernel(
 
   float local_sum = 0.0f;
   for (int column = tid; column < width; column += blockDim.x) {
-    const float value = __half2float(input[row * width + column]);
+    half input_h = input[row * width + column];
+    if (AddResidual) {
+      // torch.add(FP16, FP16) materializes a rounded FP16 residual before
+      // RMSNorm. Preserve that boundary even though the launches are fused.
+      input_h = __float2half(__half2float(input_h) +
+          __half2float(residual[row * width + column]));
+      residual_output[row * width + column] = input_h;
+      normalized[column] = input_h;
+    }
+    const float value = __half2float(input_h);
     local_sum += value * value;
   }
   reduce_scratch[tid] = local_sum;
@@ -91,7 +102,8 @@ __global__ void rms_norm_quant_i4_rows_kernel(
   const float inverse = rsqrtf(reduce_scratch[0] / denominator + eps);
   for (int column = tid; column < width; column += blockDim.x) {
     normalized[column] = __float2half(
-        __half2float(input[row * width + column]) * inverse);
+        __half2float(AddResidual ? normalized[column]
+                               : input[row * width + column]) * inverse);
   }
   __syncthreads();
 
@@ -108,8 +120,15 @@ __global__ void rms_norm_quant_i4_rows_kernel(
     }
     __syncthreads();
   }
-  const half scale_h = __hdiv(__float2half(reduce_scratch[0]),
-                              __float2half(7.0f));
+  half scale_h = __hdiv(__float2half(reduce_scratch[0]),
+                       __float2half(7.0f));
+  if (ClipScale) {
+    // Quantizer computes FP16 max/7, then scalar clipping, then FP16's tiny
+    // clamp. Applying clipping in FP32 before the division's FP16 round is
+    // observably different at INT4 thresholds.
+    scale_h = __float2half(__half2float(scale_h) * clip_ratio);
+    scale_h = __float2half(fmaxf(__half2float(scale_h), 0x1.0p-14f));
+  }
   if (tid == 0) scales[row] = scale_h;
 
   for (int pair = tid; pair < width / 2; pair += blockDim.x) {
@@ -1014,17 +1033,83 @@ std::vector<torch::Tensor> rms_norm_quant_i4_rows(
   auto packed = torch::empty(packed_shape, input.options().dtype(torch::kUInt8));
   auto scales = torch::empty(scale_shape, input.options());
   at::hip::HIPGuard guard{static_cast<char>(input.get_device())};
-  hipLaunchKernelGGL(rms_norm_quant_i4_rows_kernel, dim3(rows),
+  hipLaunchKernelGGL((rms_norm_quant_i4_rows_kernel<false, false>), dim3(rows),
       dim3(kThreads), width * sizeof(half),
       at::hip::getCurrentHIPStream().stream(),
       reinterpret_cast<const half*>(input.data_ptr<at::Half>()),
+      nullptr, nullptr,
       packed.data_ptr<uint8_t>(),
       reinterpret_cast<half*>(scales.data_ptr<at::Half>()),
       static_cast<int>(rows), static_cast<int>(width),
-      static_cast<float>(mean_dim), static_cast<float>(eps));
+      static_cast<float>(mean_dim), static_cast<float>(eps), 1.0f);
   TORCH_CHECK(hipGetLastError() == hipSuccess,
               "fused RMSNorm+INT4 launch failed");
   return {packed, scales};
+}
+
+namespace {
+
+template <bool AddResidual>
+std::vector<torch::Tensor> rms_norm_quant_i4_rows_clipped_impl(
+    torch::Tensor input, torch::Tensor residual, int64_t mean_dim,
+    double eps, double clip_ratio) {
+  check_cuda_half_contiguous(input, "input");
+  TORCH_CHECK(input.dim() >= 1 && input.size(-1) == mean_dim,
+              "RMSNorm mean_dim must equal the input width");
+  TORCH_CHECK(mean_dim > 0 && mean_dim <= kMaxFusedWidth && mean_dim % 2 == 0,
+              "fused RMSNorm+INT4 supports positive even widths up to ",
+              kMaxFusedWidth);
+  TORCH_CHECK(std::isfinite(eps) && eps > 0,
+              "RMSNorm eps must be finite and positive");
+  TORCH_CHECK(std::isfinite(clip_ratio) && clip_ratio > 0 && clip_ratio <= 1,
+              "input_clip_ratio must be in (0, 1]");
+  const int64_t rows = input.numel() / mean_dim;
+  TORCH_CHECK(rows > 0, "fused RMSNorm+INT4 does not support empty tensors");
+  if (AddResidual) {
+    check_cuda_half_contiguous(residual, "residual");
+    TORCH_CHECK(residual.sizes() == input.sizes(),
+                "residual must have the input shape");
+    TORCH_CHECK(residual.device() == input.device(),
+                "residual must be on the input device");
+  }
+  at::hip::HIPGuard guard{static_cast<char>(input.get_device())};
+  auto packed_shape = input.sizes().vec(); packed_shape.back() = mean_dim / 2;
+  auto scale_shape = input.sizes().vec(); scale_shape.back() = 1;
+  auto packed = torch::empty(packed_shape, input.options().dtype(torch::kUInt8));
+  auto scales = torch::empty(scale_shape, input.options());
+  auto residual_output = AddResidual ? torch::empty_like(input) : torch::Tensor();
+  hipLaunchKernelGGL((rms_norm_quant_i4_rows_kernel<true, AddResidual>),
+      dim3(rows), dim3(kThreads), mean_dim * sizeof(half),
+      at::hip::getCurrentHIPStream().stream(),
+      reinterpret_cast<const half*>(input.data_ptr<at::Half>()),
+      AddResidual ? reinterpret_cast<const half*>(residual.data_ptr<at::Half>())
+                  : nullptr,
+      AddResidual ? reinterpret_cast<half*>(residual_output.data_ptr<at::Half>())
+                  : nullptr,
+      packed.data_ptr<uint8_t>(),
+      reinterpret_cast<half*>(scales.data_ptr<at::Half>()),
+      static_cast<int>(rows), static_cast<int>(mean_dim),
+      static_cast<float>(mean_dim), static_cast<float>(eps),
+      static_cast<float>(clip_ratio));
+  TORCH_CHECK(hipGetLastError() == hipSuccess,
+              "clipped row-independent RMSNorm+INT4 launch failed");
+  if (AddResidual) return {packed, scales, residual_output};
+  return {packed, scales};
+}
+
+}  // namespace
+
+std::vector<torch::Tensor> rms_norm_quant_i4_rows_clipped(
+    torch::Tensor input, int64_t mean_dim, double eps, double clip_ratio) {
+  return rms_norm_quant_i4_rows_clipped_impl<false>(
+      input, torch::Tensor(), mean_dim, eps, clip_ratio);
+}
+
+std::vector<torch::Tensor> residual_rms_norm_quant_i4_rows(
+    torch::Tensor input, torch::Tensor residual, int64_t mean_dim,
+    double eps, double clip_ratio) {
+  return rms_norm_quant_i4_rows_clipped_impl<true>(
+      input, residual, mean_dim, eps, clip_ratio);
 }
 
 void fused_append_kv_i4(

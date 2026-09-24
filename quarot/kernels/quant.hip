@@ -1,3 +1,4 @@
+#include <ATen/hip/HIPContext.h>
 #include <quant.h>
 
 __device__ __forceinline__ int half_to_int_rn(half value)
@@ -68,7 +69,7 @@ void sym_quant_host(
 
     dim3 block{std::min<uint32_t>(colsDst, 32), std::min<uint32_t>(rows, 16)};
     dim3 grid{cdiv(colsDst, block.x), cdiv(rows, block.y)};
-    sym_quantize_f16_i4_kernel<<<grid, block>>>(x, scale, rows, colsSrc, colsDst, q);
+    sym_quantize_f16_i4_kernel<<<grid, block, 0, at::hip::getCurrentHIPStream().stream()>>>(x, scale, rows, colsSrc, colsDst, q);
 }
 
 
@@ -82,7 +83,7 @@ void sym_dequant_host(const int32_t *q,
 {
     dim3 block{std::min<uint32_t>(cols, 16), std::min<uint32_t>(rows, 16)};
     dim3 grid{cdiv(cols, block.x), cdiv(rows, block.y)};
-    sym_dequantize_i32_f16_kernel<<<grid, block>>>(
+    sym_dequantize_i32_f16_kernel<<<grid, block, 0, at::hip::getCurrentHIPStream().stream()>>>(
             q,
             scale_row, scale_col,
             rows, cols, x);

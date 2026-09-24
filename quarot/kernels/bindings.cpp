@@ -5,6 +5,8 @@
 #include <quant.h>
 #include <flashinfer.h>
 #include <fused.h>
+#include <verification_metadata.h>
+#include <verification_preprocess.h>
 
 
 torch::Tensor matmul(const torch::Tensor &A, const torch::Tensor &B)
@@ -684,10 +686,23 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m
     m.def("batch_decode_f16_gqa", &batch_decode_f16_gqa, "Native GQA FP16 paged decode");
     m.def("init_kv_f16", &init_kv_f16, "");
     m.def("append_kv_f16", &append_kv_f16, "");
+    m.def("verification_metadata", &verification_metadata);
+    m.def("hadamard_h128", &hadamard_h128);
+    m.def("chunk_q_norm_rope_hadamard", &chunk_q_norm_rope_hadamard);
+    m.def("chunk_k_norm_rope_append_i4", &chunk_k_norm_rope_append_i4);
     m.def("rms_norm_rows", &rms_norm_rows,
           "Row-independent FP16 RMSNorm");
     m.def("rms_norm_quant_i4_rows", &rms_norm_quant_i4_rows,
           "Fused row-independent FP16 RMSNorm and signed INT4 quantization");
+    m.def("rms_norm_quant_i4_rows_clipped", &rms_norm_quant_i4_rows_clipped,
+          "Exact row RMSNorm, checkpoint clipping, and signed INT4 packing",
+          py::arg("input"), py::arg("mean_dim"), py::arg("eps"),
+          py::arg("clip_ratio") = 1.0);
+    m.def("residual_rms_norm_quant_i4_rows", &residual_rms_norm_quant_i4_rows,
+          "FP16 residual add, exact row RMSNorm and clipped INT4 packing; "
+          "returns packed, scales, rounded residual",
+          py::arg("input"), py::arg("residual"), py::arg("mean_dim"),
+          py::arg("eps"), py::arg("clip_ratio") = 1.0);
     m.def("fused_append_kv_i4", &fused_append_kv_i4, "Fused Hadamard, asymmetric INT4 quantization, and paged KV-cache append");
     m.def("fused_rope_append_kv_i4", &fused_rope_append_kv_i4,
           "K1: fused Q/K RoPE, K Hadamard, INT4 K/V quantization and paged append");

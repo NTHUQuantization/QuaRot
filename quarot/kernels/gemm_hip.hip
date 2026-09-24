@@ -1,3 +1,4 @@
+#include <ATen/hip/HIPContext.h>
 #include <gemm.h>
 
 #include <hip/hip_runtime.h>
@@ -824,7 +825,7 @@ void launch_prepack_b(const Int4Storage* B, Int4Storage* BPre, uint32_t N, uint3
     const uint32_t units = static_cast<uint32_t>(b_prepacked_size_bytes(N, K) / 8u);
     const uint32_t block = 256;
     const uint32_t grid  = (units + block - 1u) / block;
-   hipLaunchKernelGGL(( prepack_b_kernel), dim3(grid), dim3(block), 0, 0, B, BPre, N, K);
+   hipLaunchKernelGGL(( prepack_b_kernel), dim3(grid), dim3(block), 0, at::hip::getCurrentHIPStream().stream(), B, BPre, N, K);
     check_hip(hipGetLastError(), "prepack_b_kernel launch");
 }
 
@@ -870,7 +871,7 @@ void launch_bpre(const Int4Storage* A,
                         (16u * BlockMWaves * MTilesPerWave));
 
    hipLaunchKernelGGL(( bpre_kernel<BlockMWaves, BlockNWaves, MTilesPerWave, NTilesPerWave>)
-        , dim3(grid), dim3(block), 0, 0, A, BPre, C, M, N, K);
+        , dim3(grid), dim3(block), 0, at::hip::getCurrentHIPStream().stream(), A, BPre, C, M, N, K);
 }
 
 template <uint32_t BlockMWaves,
@@ -893,7 +894,7 @@ void launch_lds_swizzle(const Int4Storage* A,
                         (16u * BlockMWaves * MTilesPerWave));
 
    hipLaunchKernelGGL(( lds_swizzle_kernel<BlockMWaves, BlockNWaves, MTilesPerWave, NTilesPerWave, LdsK>)
-        , dim3(grid), dim3(block), 0, 0, A, B, C, M, N, K);
+        , dim3(grid), dim3(block), 0, at::hip::getCurrentHIPStream().stream(), A, B, C, M, N, K);
 }
 
 template <uint32_t BlockNWaves>
@@ -912,7 +913,7 @@ void launch_bpre_grouped_scale(const Int4Storage* A,
     const dim3 grid((N + 16u * BlockNWaves - 1u) / (16u * BlockNWaves),
                     (M + 15u) / 16u);
 
-   hipLaunchKernelGGL(( bpre_grouped_scale_kernel<1, BlockNWaves>), dim3(grid), dim3(block), 0, 0,
+   hipLaunchKernelGGL(( bpre_grouped_scale_kernel<1, BlockNWaves>), dim3(grid), dim3(block), 0, at::hip::getCurrentHIPStream().stream(),
         A, BPre, scale_group, scale_weight, C, M, N, K, scale_groups);
 }
 
@@ -937,7 +938,7 @@ void launch_bpre_multi_scale(const Int4Storage* A,
                         (16u * BlockNWaves),
                     (M + 15u) / 16u);
 
-   hipLaunchKernelGGL(( bpre_multi_scale_kernel<BlockNWaves>), dim3(grid), dim3(block), 0, 0,
+   hipLaunchKernelGGL(( bpre_multi_scale_kernel<BlockNWaves>), dim3(grid), dim3(block), 0, at::hip::getCurrentHIPStream().stream(),
         A, B0, B1, B2, scale_activation, scale_weight0, scale_weight1,
         scale_weight2, C, M, N0, N1, N2, K, allow_interleaved);
 }
@@ -1253,7 +1254,7 @@ void matmul_bpre_grouped_scale_host(const Int4Storage* A,
     {
         const dim3 block(128u);
         const dim3 grid((N + 31u) / 32u, (M + 31u) / 32u);
-       hipLaunchKernelGGL(( bpre_grouped_scale_kernel<2, 2>), dim3(grid), dim3(block), 0, 0,
+       hipLaunchKernelGGL(( bpre_grouped_scale_kernel<2, 2>), dim3(grid), dim3(block), 0, at::hip::getCurrentHIPStream().stream(),
             A, BPre, scale_group, scale_weight, C, M, N, K, scale_groups);
     }
     else if(M <= 16u)
@@ -1284,7 +1285,7 @@ void matmul_bpre_grouped_scale_host(const Int4Storage* A,
     {
         const dim3 block(32u);
         const dim3 grid((N + 15u) / 16u, (M + 15u) / 16u);
-       hipLaunchKernelGGL(( bpre_grouped_scale_kernel<1, 1>), dim3(grid), dim3(block), 0, 0,
+       hipLaunchKernelGGL(( bpre_grouped_scale_kernel<1, 1>), dim3(grid), dim3(block), 0, at::hip::getCurrentHIPStream().stream(),
             A, BPre, scale_group, scale_weight, C, M, N, K, scale_groups);
     }
     check_hip(hipGetLastError(), "bpre_grouped_scale_kernel launch");

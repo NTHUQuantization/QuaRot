@@ -1,6 +1,8 @@
 # Fused PARD2 source index
 
 Start with [PARD2_QWEN3.md](PARD2_QWEN3.md) for the current support matrix and commands.
+For fused-only AR, current optimization switches, and exact host/container paths,
+see [FUSED_ONLY_AND_PARD2_ZH.md](FUSED_ONLY_AND_PARD2_ZH.md).
 
 | Area | Entry points |
 |---|---|
@@ -42,6 +44,11 @@ before reuse; use the current setup guide for portable CLI examples.
 Source code, regression tests, experiment plans, and written reports are tracked.
 New checkpoint weights, training tensors, compiler caches, profiler traces,
 monitor CSVs, and raw experiment directories stay local and are ignored.
+The curated `verification_optimization_20260924` evidence is an explicit exception:
+small per-stage result JSON, manifests, final build/test logs, and summary are
+tracked so its tables can be regenerated without GPU execution. Large traces and
+tensor artifacts remain local. Its correctness result is 229 targeted tests;
+the 317-test result below belongs to the earlier release, not this change.
 Older result artifacts already tracked by the branch remain available.
 `third-party/PARD` is an optional local upstream checkout, not a Git submodule;
 its pinned revision and benchmark data setup are documented in the setup guide.

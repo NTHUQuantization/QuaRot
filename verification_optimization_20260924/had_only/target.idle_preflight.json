@@ -1,0 +1,23 @@
+[
+  {
+    "unix_time": 1790214306.2022324,
+    "stdout": "{\"card0\": {\"GPU use (%)\": \"0\"}}\n",
+    "stderr": "WARNING: AMD GPU device(s) is/are in a low-power state. Check power control/runtime_status\n\n",
+    "exit_code": 0,
+    "idle": true
+  },
+  {
+    "unix_time": 1790214307.30208,
+    "stdout": "{\"card0\": {\"GPU use (%)\": \"0\"}}\n",
+    "stderr": "WARNING: AMD GPU device(s) is/are in a low-power state. Check power control/runtime_status\n\n",
+    "exit_code": 0,
+    "idle": true
+  },
+  {
+    "unix_time": 1790214308.4072242,
+    "stdout": "{\"card0\": {\"GPU use (%)\": \"0\"}}\n",
+    "stderr": "WARNING: AMD GPU device(s) is/are in a low-power state. Check power control/runtime_status\n\n",
+    "exit_code": 0,
+    "idle": true
+  }
+]

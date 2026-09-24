@@ -109,17 +109,36 @@ class QuarotAttentionMixin:
             query_states = self.q_proj(hidden_states).view(shape)
             key_states = self.k_proj(hidden_states).view(shape)
             value_states = self.v_proj(hidden_states).view(shape)
-        if hasattr(self, "q_norm"):
+        cos, sin = position_embeddings
+        use_chunk_preprocess = (
+            os.getenv("QUAROT_CHUNK_PREPROCESS", "0") != "0"
+            and hasattr(self, "q_norm") and past_key_value is not None
+            # Preserve the existing grouped-checkpoint M=1 rounding path.
+            and not (q_len == 1 and self._fused_k1_enabled)
+            and query_states.dtype == torch.float16 and self.head_dim == 128
+            and self.q_norm.weight.dtype == torch.float16
+            and self.k_norm.weight.dtype == torch.float16
+            and self.q_norm.weight.is_contiguous() and self.k_norm.weight.is_contiguous()
+            and cos.dtype == torch.float16 and sin.dtype == torch.float16
+            and cos.numel() == bsz * q_len * self.head_dim
+            and hasattr(past_key_value, "can_fuse_chunk")
+            and past_key_value.can_fuse_chunk(self.layer_idx, attention_mask, q_len))
+        if hasattr(self, "q_norm") and not use_chunk_preprocess:
             query_states = self.q_norm(query_states)
             key_states = self.k_norm(key_states)
-        cos, sin = position_embeddings
         use_fused_k1 = (
             self._fused_k1_enabled and past_key_value is not None and
             q_len == 1 and query_states.dtype == torch.float16 and
             cos.numel() == bsz * self.head_dim and
             hasattr(past_key_value, "can_fuse_k1") and
             past_key_value.can_fuse_k1(self.layer_idx, attention_mask))
-        if use_fused_k1:
+        if use_chunk_preprocess:
+            query_states, cache_out = past_key_value.update_fused_chunk(
+                query_states, key_states, value_states, cos, sin, self.layer_idx,
+                self.q_norm.weight, self.k_norm.weight,
+                self.q_norm.variance_epsilon, self.k_norm.variance_epsilon)
+            attn_output = cache_out(query_states)
+        elif use_fused_k1:
             query_states, cache_out = past_key_value.update_fused_k1(
                 query_states, key_states, value_states, cos, sin,
                 self.layer_idx)
@@ -323,5 +342,13 @@ class QuarotCausalLMMixin:
             self._expected_max_length = None
             past_key_values = self.build_cache(
                 input_ids.shape[0], max_length, max_length)
+        if (past_key_values is not None and input_ids is not None
+                and kwargs.get("attention_mask") is None
+                and hasattr(past_key_values, "prepare_verification_metadata")):
+            positions = past_key_values.prepare_verification_metadata(input_ids.shape[1])
+            # Explicit positions remain authoritative for eager callers.
+            if positions is not None and (kwargs.get("cache_position") is None
+                    or past_key_values._verification_graph_capture):
+                kwargs["cache_position"] = positions
         return super().forward(
             input_ids, *args, past_key_values=past_key_values, **kwargs)

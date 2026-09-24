@@ -1,0 +1,122 @@
+{
+  "stage": "all",
+  "flags": {
+    "QUAROT_BATCHED_H128": "1",
+    "QUAROT_STATIC_KV_METADATA": "1",
+    "QUAROT_VERIFICATION_GRAPH": "1",
+    "QUAROT_CHUNK_PREPROCESS": "1"
+  },
+  "fused_norm_quant": true,
+  "commands": [
+    [
+      "/opt/venv/bin/python",
+      "/workspace_root/fused_v1/verification_optimization_20260924/target_probe.py",
+      "--output",
+      "/workspace_root/fused_v1/verification_optimization_20260924/all/target",
+      "--samples",
+      "6",
+      "--contexts",
+      "127",
+      "128",
+      "129",
+      "--fused-norm-quant",
+      "--reference",
+      "/workspace_root/fused_v1/verification_optimization_20260924/baseline/target/artifacts.pt"
+    ],
+    [
+      "/opt/venv/bin/python",
+      "/workspace_root/fused_v1/e2e/benchmark_pard2.py",
+      "--mode",
+      "pard2-ti",
+      "--dataset",
+      "humaneval",
+      "--output",
+      "/workspace_root/fused_v1/verification_optimization_20260924/all/pard2-ti_humaneval.json",
+      "--limit",
+      "1",
+      "--generated-tokens",
+      "32",
+      "--warmups",
+      "1",
+      "--sweeps",
+      "2",
+      "--compile-mode",
+      "eager",
+      "--ignore-eos",
+      "--fused-norm-quant"
+    ],
+    [
+      "/opt/venv/bin/python",
+      "/workspace_root/fused_v1/e2e/benchmark_pard2.py",
+      "--mode",
+      "pard2-td",
+      "--dataset",
+      "humaneval",
+      "--output",
+      "/workspace_root/fused_v1/verification_optimization_20260924/all/pard2-td_humaneval.json",
+      "--limit",
+      "1",
+      "--generated-tokens",
+      "32",
+      "--warmups",
+      "1",
+      "--sweeps",
+      "2",
+      "--compile-mode",
+      "eager",
+      "--ignore-eos",
+      "--fused-norm-quant"
+    ]
+  ],
+  "last_invocation": {
+    "stages": [
+      "all",
+      "baseline_repeat"
+    ],
+    "parts": [
+      "target",
+      "pard2"
+    ],
+    "output": "/workspace_root/fused_v1/verification_optimization_20260924",
+    "reference": null,
+    "model": null,
+    "draft": null,
+    "tokenizer": null,
+    "contexts": [
+      127,
+      128,
+      129
+    ],
+    "samples": 6,
+    "generated_tokens": 32,
+    "warmups": 1,
+    "sweeps": 2,
+    "limit": 1,
+    "dataset": "humaneval",
+    "modes": [
+      "pard2-ti",
+      "pard2-td"
+    ],
+    "compile_mode": "eager",
+    "skip_complete": false
+  },
+  "provenance": {
+    "git_head": "8db871026d8b9cd41bcbc2ffc0b1f164df6359bc",
+    "tracked_diff_sha256": "d4b475dd2b62541fec4db99dc23ce6574e37df055e0c5bfc1d4c57879bba8cf5",
+    "source_sha256": {
+      "e2e/speculative.py": "ccd4e2932267136153ebbe49f582b4c1c2e849364ece3b4b53424b2eea8b51d7",
+      "e2e/verification_graph.py": "c841d48fd3c217ae1882a3caf0f7690a251f5866567c6f7326c78ad31e889403",
+      "e2e/benchmark_pard2.py": "d2bab2b4b1d65cc66d39db49727b0afe86bc73f25679f6db3bdba308276163f7",
+      "e2e/quantized_common.py": "ccd29fab62b3934630c76ed1421dcc523c67423d67558399b7c0d1a6e6568abb",
+      "quarot/transformers/kv_cache.py": "bd991d7716f9d0f64456ac62bde1015a9fdb4a3298353e7f2df0b7a0e910ab3c",
+      "quarot/kernels/bindings.cpp": "46dba619cd9ba55700726594e319a59e8c675a5f8fa0dc8b46fd42f7555b1d2d",
+      "quarot/kernels/fused_hip.hip": "03fcc37205a25a01cab8dea66c024e95ee09a6012b37ba660627c7afb747fbdf",
+      "quarot/kernels/verification_preprocess.hip": "0e1e883c4713177bce0e7d6c79e00534d785b97de1409b09c7f57b45269e18a5",
+      "quarot/kernels/verification_metadata.hip": "03ec504dfe2c60fa13a8406e9055fa5744cfb2e55b42ec3a44365c28df0ae5ae",
+      "setup.py": "9b415d85b9cd72f2071d9c9647a2b8b557ab9387006a17ef776b65d3116c9301"
+    },
+    "python": "3.10.12 (main, Jan  8 2026, 06:52:19) [GCC 11.4.0]",
+    "executable": "/opt/venv/bin/python",
+    "build_command": "MAX_JOBS=4 python setup.py build_ext --inplace"
+  }
+}

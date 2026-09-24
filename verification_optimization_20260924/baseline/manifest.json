@@ -1,0 +1,34 @@
+{
+  "stage": "baseline",
+  "flags": {
+    "QUAROT_BATCHED_H128": "0",
+    "QUAROT_STATIC_KV_METADATA": "0",
+    "QUAROT_VERIFICATION_GRAPH": "0",
+    "QUAROT_CHUNK_PREPROCESS": "0"
+  },
+  "fused_norm_quant": false,
+  "commands": [
+    [
+      "/opt/venv/bin/python",
+      "/workspace_root/fused_v1/e2e/benchmark_pard2.py",
+      "--mode",
+      "ar",
+      "--dataset",
+      "humaneval",
+      "--output",
+      "/workspace_root/fused_v1/verification_optimization_20260924/baseline/ar_humaneval.json",
+      "--limit",
+      "1",
+      "--generated-tokens",
+      "32",
+      "--warmups",
+      "1",
+      "--sweeps",
+      "2",
+      "--compile-mode",
+      "eager",
+      "--ignore-eos",
+      "--no-fused-norm-quant"
+    ]
+  ]
+}

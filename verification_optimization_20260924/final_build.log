@@ -1,0 +1,26 @@
+/workspace_root/fused_v1/quarot/kernels/include_hip/common.h -> /workspace_root/fused_v1/quarot/kernels/include_hip/common.h [skipped, no changes]
+/workspace_root/fused_v1/quarot/kernels/include_hip/gemm.h -> /workspace_root/fused_v1/quarot/kernels/include_hip/gemm.h [skipped, no changes]
+/workspace_root/fused_v1/quarot/kernels/include_hip/flashinfer.h -> /workspace_root/fused_v1/quarot/kernels/include_hip/flashinfer.h [skipped, no changes]
+/workspace_root/fused_v1/quarot/kernels/include_hip/fused.h -> /workspace_root/fused_v1/quarot/kernels/include_hip/fused.h [skipped, no changes]
+/workspace_root/fused_v1/quarot/kernels/include_hip/verification_metadata.h -> /workspace_root/fused_v1/quarot/kernels/include_hip/verification_metadata.h [skipped, no changes]
+/workspace_root/fused_v1/quarot/kernels/include_hip/verification_preprocess.h -> /workspace_root/fused_v1/quarot/kernels/include_hip/verification_preprocess.h [skipped, no changes]
+/workspace_root/fused_v1/quarot/kernels/bindings.cpp -> /workspace_root/fused_v1/quarot/kernels/bindings.cpp [skipped, no changes]
+/workspace_root/fused_v1/quarot/kernels/gemm.hip -> /workspace_root/fused_v1/quarot/kernels/gemm_hip.hip [skipped, already hipified]
+/workspace_root/fused_v1/quarot/kernels/quant.hip -> /workspace_root/fused_v1/quarot/kernels/quant_hip.hip [skipped, already hipified]
+/workspace_root/fused_v1/quarot/kernels/include_hip/flashinfer/vec_dtypes.cuh -> /workspace_root/fused_v1/quarot/kernels/include_hip/flashinfer/vec_dtypes.cuh [skipped, no changes]
+/workspace_root/fused_v1/quarot/kernels/include_hip/flashinfer/quantization.cuh -> /workspace_root/fused_v1/quarot/kernels/include_hip/flashinfer/quantization.cuh [skipped, no changes]
+/workspace_root/fused_v1/quarot/kernels/flashinfer.hip -> /workspace_root/fused_v1/quarot/kernels/flashinfer.hip [skipped, no changes]
+/workspace_root/fused_v1/quarot/kernels/include_hip/hadamard_wmma.cuh -> /workspace_root/fused_v1/quarot/kernels/include_hip/hadamard_wmma.cuh [skipped, no changes]
+/workspace_root/fused_v1/quarot/kernels/fused_hip.hip -> /workspace_root/fused_v1/quarot/kernels/fused_hip.hip [skipped, no changes]
+/workspace_root/fused_v1/quarot/kernels/verification_preprocess.hip -> /workspace_root/fused_v1/quarot/kernels/verification_preprocess.hip [skipped, no changes]
+/workspace_root/fused_v1/quarot/kernels/verification_metadata.hip -> /workspace_root/fused_v1/quarot/kernels/verification_metadata.hip [skipped, no changes]
+[92mSuccessfully preprocessed all matching files.[0m
+Total number of unsupported CUDA function calls: 0
+
+
+Total number of replaced kernel launches: 9
+running build_ext
+building 'quarot._HIP' extension
+[1/1] /opt/rocm/bin/hipcc  -I/workspace_root/fused_v1/quarot/kernels/include_hip -I/opt/venv/lib/python3.10/site-packages/torch/include -I/opt/venv/lib/python3.10/site-packages/torch/include/torch/csrc/api/include -I/opt/venv/lib/python3.10/site-packages/torch/include/THH -I/opt/rocm/include -I/opt/venv/include -I/usr/include/python3.10 -c -c /workspace_root/fused_v1/quarot/kernels/verification_preprocess.hip -o /workspace_root/fused_v1/build/temp.linux-x86_64-cpython-310/quarot/kernels/verification_preprocess.o -D__HIP_PLATFORM_AMD__=1 -DUSE_ROCM=1 -DHIPBLAS_V2 -fPIC -DCUDA_HAS_FP16=1 -D__HIP_NO_HALF_OPERATORS__=1 -D__HIP_NO_HALF_CONVERSIONS__=1 -DHIP_ENABLE_WARP_SYNC_BUILTINS=1 -O3 -DQUAROT_BPRE_GFX12=1 -U__HIP_NO_HALF_OPERATORS__ -U__HIP_NO_HALF_CONVERSIONS__ -DTORCH_API_INCLUDE_EXTENSION_H -DTORCH_EXTENSION_NAME=_HIP --offload-arch=gfx1201 -fno-gpu-rdc -std=c++17
+x86_64-linux-gnu-g++ -Wno-unused-result -Wsign-compare -DNDEBUG -g -fwrapv -O2 -Wall -g -fstack-protector-strong -Wformat -Werror=format-security -g -fwrapv -O2 -shared -Wl,-O1 -Wl,-Bsymbolic-functions /workspace_root/fused_v1/build/temp.linux-x86_64-cpython-310/quarot/kernels/bindings.o /workspace_root/fused_v1/build/temp.linux-x86_64-cpython-310/quarot/kernels/flashinfer.o /workspace_root/fused_v1/build/temp.linux-x86_64-cpython-310/quarot/kernels/fused_hip.o /workspace_root/fused_v1/build/temp.linux-x86_64-cpython-310/quarot/kernels/gemm_hip.o /workspace_root/fused_v1/build/temp.linux-x86_64-cpython-310/quarot/kernels/quant_hip.o /workspace_root/fused_v1/build/temp.linux-x86_64-cpython-310/quarot/kernels/verification_metadata.o /workspace_root/fused_v1/build/temp.linux-x86_64-cpython-310/quarot/kernels/verification_preprocess.o -L/opt/venv/lib/python3.10/site-packages/torch/lib -L/opt/rocm/lib -L/opt/rocm/hip/lib -L/usr/lib/x86_64-linux-gnu -lc10 -ltorch -ltorch_cpu -ltorch_python -lamdhip64 -lc10_hip -ltorch_hip -o build/lib.linux-x86_64-cpython-310/quarot/_HIP.cpython-310-x86_64-linux-gnu.so
+copying build/lib.linux-x86_64-cpython-310/quarot/_HIP.cpython-310-x86_64-linux-gnu.so -> quarot

@@ -44,6 +44,8 @@ if __name__ == '__main__':
                     'quarot/kernels/quant.hip',
                     'quarot/kernels/flashinfer.hip',
                     'quarot/kernels/fused_hip.hip',
+                    'quarot/kernels/verification_preprocess.hip',
+                    'quarot/kernels/verification_metadata.hip',
                 ],
                 include_dirs=[
                     os.path.join(setup_dir, 'quarot/kernels/include_hip'),

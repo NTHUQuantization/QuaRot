@@ -1,0 +1,1 @@
+These two source files preserve the implementation used by the initial independent/cumulative A/B matrix. Final sources add input-capacity checks and preserve grouped-checkpoint M=1 K1 dispatch. The measured legacy 8B arithmetic is unchanged. The final all/baseline_repeat pair is rebuilt and remeasured after these guards. Other implementation sources are unchanged.

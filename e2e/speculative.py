@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 import json
+import os
 from pathlib import Path
 import time
 from typing import Iterable
@@ -708,19 +709,20 @@ class _RowIndependentRMSNorm(torch.nn.Module):
 class _RowIndependentRMSNormQuant(torch.nn.Module):
     """Fuse exact row-independent RMSNorm with symmetric INT4 packing."""
 
-    def __init__(self, module):
+    def __init__(self, module, input_clip_ratio=1.0):
         super().__init__()
         self.module = module
         self.mean_dim = module.mean_dim
         self.eps = module.eps
+        self.input_clip_ratio = float(input_clip_ratio)
 
     def forward(self, value):
         if not value.is_cuda or value.dtype != torch.float16:
             raise RuntimeError(
                 "fused RMSNorm+INT4 quantization requires CUDA FP16 input")
         import quarot
-        packed, scales = quarot._HIP.rms_norm_quant_i4_rows(
-            value.contiguous(), self.mean_dim, self.eps)
+        packed, scales = quarot._HIP.rms_norm_quant_i4_rows_clipped(
+            value.contiguous(), self.mean_dim, self.eps, self.input_clip_ratio)
         return quarot.PackedQuantizedTensor(
             packed, scales, logical_shape=value.shape)
 
@@ -783,10 +785,14 @@ class FusedPardRuntime:
                 wrapper = (_RowIndependentRMSNormQuant
                            if self.fused_norm_quant else _RowIndependentRMSNorm)
                 if not isinstance(layer.input_layernorm, wrapper):
-                    layer.input_layernorm = wrapper(layer.input_layernorm)
+                    layer.input_layernorm = wrapper(layer.input_layernorm,
+                        **({"input_clip_ratio": layer.self_attn.quantizer.input_clip_ratio}
+                           if self.fused_norm_quant else {}))
                 if not isinstance(layer.post_attention_layernorm, wrapper):
                     layer.post_attention_layernorm = wrapper(
-                        layer.post_attention_layernorm)
+                        layer.post_attention_layernorm,
+                        **({"input_clip_ratio": layer.mlp.quantizer.input_clip_ratio}
+                           if self.fused_norm_quant else {}))
         if self.rowwise_lm_head and hasattr(target, "lm_head"):
             if not isinstance(target.lm_head, _ExactSmallChunkRows):
                 target.lm_head = _ExactSmallChunkRows(
@@ -801,6 +807,9 @@ class FusedPardRuntime:
             self.td_cache_basis, folded_basis=self.td_basis_fold)
                           if mode == "pard2-td" else None)
         self.draft_forward = draft.forward if draft is not None else None
+        self.verification_graph = os.getenv("QUAROT_VERIFICATION_GRAPH", "0") != "0"
+        self._verification_cache = None
+        self._verification_graphs = {}
         if draft is not None and compile_mode != "eager":
             # Proposal decoding deliberately specializes the drafter for the
             # bounded sequence lengths draft_k..(2 * draft_k - 1). Dynamo's
@@ -815,11 +824,24 @@ class FusedPardRuntime:
     def close(self):
         if self.collector is not None:
             self.collector.close()
+            self.collector.reset()
+        self._verification_graphs.clear()
+        self._verification_cache = None
 
     def _target_cache(self):
-        return self.target.build_cache(1, self.page_size, self.max_cache_len,
+        if self.verification_graph and self._verification_cache is not None:
+            cache = self._verification_cache
+            cache.length = 0
+            cache._needs_init = [True] * cache.n_layers
+            cache._active_chunk_metadata = None
+            cache._metadata_prepared_key = None
+            return cache
+        cache = self.target.build_cache(1, self.page_size, self.max_cache_len,
             native_gqa=self.native_gqa,
             fused_decode_append=self.fused_decode_append)
+        if self.verification_graph:
+            self._verification_cache = cache
+        return cache
 
 
     def _draft_cache(self):
@@ -835,8 +857,23 @@ class FusedPardRuntime:
                            dtype=next(self.draft.parameters()).dtype)
 
     def _target_call(self, ids, cache, positions, materialize_features=True):
+        # Internal runtime contract: positions are the contiguous suffix at
+        # cache.length. Graph replay derives that suffix on the GPU.
         if self.collector is not None:
             self.collector.reset()
+        if (self.verification_graph and ids.shape[1] in (15, 16)
+                and getattr(cache, "_static_metadata_enabled", False)
+                and not any(cache._needs_init)):
+            from e2e.verification_graph import VerificationGraph
+            rows = ids.shape[1]
+            graph = self._verification_graphs.get((id(cache), rows))
+            if graph is None:
+                graph = VerificationGraph(self.target, cache, ids, self.collector)
+                self._verification_graphs[(id(cache), rows)] = graph
+            output = graph.replay(ids)
+            features = (self.collector.features()
+                if self.collector is not None and materialize_features else None)
+            return output, features
         output = self.target(input_ids=ids, past_key_values=cache,
                              cache_position=positions, use_cache=True,
                              attention_mask=None, return_dict=True,
@@ -983,9 +1020,13 @@ class FusedPardRuntime:
 
             verify_ids = (candidates if first_round else
                           torch.cat((target_input, candidates), dim=1))
-            target_pos = torch.arange(target_cache.length,
-                                      target_cache.length + verify_ids.shape[1],
-                                      device=input_ids.device)
+            # The graph's metadata kernel produces positions from its GPU
+            # base-length scalar. Do not launch a redundant arange for replay.
+            target_pos = (None if self.verification_graph
+                and getattr(target_cache, "_static_metadata_enabled", False)
+                and verify_ids.shape[1] in (15, 16) else
+                torch.arange(target_cache.length,
+                    target_cache.length + verify_ids.shape[1], device=input_ids.device))
             base_length = target_cache.length
             target_out, new_features = timer.record("target_verify",
                 lambda: self._target_call(verify_ids, target_cache, target_pos,

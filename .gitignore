@@ -38,3 +38,14 @@ __pycache__/
 /third-party/PARD/
 # This JSON is source configuration, not generated benchmark output.
 !/e2e/qwen3_32b_td_experiment_matrix.json
+
+# Curated verification evidence; large traces/tensors remain local.
+!/verification_optimization_20260924/summary.json
+!/verification_optimization_20260924/norm_primitive.json
+!/verification_optimization_20260924/final_tests.log
+!/verification_optimization_20260924/final_build.log
+!/verification_optimization_20260924/final_tests.idle_preflight.json
+!/verification_optimization_20260924/*/manifest.json
+!/verification_optimization_20260924/*/target/target.json
+!/verification_optimization_20260924/*/*_humaneval.json
+!/verification_optimization_20260924/*/*.idle_preflight.json

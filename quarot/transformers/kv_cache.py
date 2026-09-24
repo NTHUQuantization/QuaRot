@@ -33,6 +33,12 @@ def matmul_had_HIP(X, dtype):
     # Flatten explicitly so every KV head/token is an independent FHT row.
     # The HIP backend otherwise mixes chunk row 1+ across leading axes.
     rows = X.to(dtype).contiguous().view(-1, n)
+    if (n == 128 and rows.dtype == torch.float16 and rows.is_cuda
+            and os.getenv("QUAROT_BATCHED_H128", "1") != "0"
+            and hasattr(_HIP, "hadamard_h128")):
+        # Eight valid rows per workgroup preserve the safe WMMA arithmetic;
+        # one launch processes all groups without padded tensors or cat.
+        return _HIP.hadamard_h128(rows).to(X.dtype).view(X.shape)
     # gfx1201 hadacore is exact for at most eight rows per dispatch.
     output = torch.cat([
         hadamard_transform(rows[start:start + 8], scale=1/math.sqrt(n))
@@ -139,10 +145,11 @@ class _AttentionStub(object):
         self.disable_quant = disable_quant
         self.hadamard_dtype = hadamard_dtype
 
-    def forward(self, q, num_kv_heads, attention_kwargs, layer_idx):
+    def forward(self, q, num_kv_heads, attention_kwargs, layer_idx,
+                hadamard_applied=False):
         batch_size, q_len, num_qo_heads, head_dim = q.shape
         q = q.view(batch_size * q_len, num_qo_heads, head_dim)
-        if self.hadamard_dtype is not None:
+        if self.hadamard_dtype is not None and not hadamard_applied:
             q = matmul_had_HIP(q, dtype=self.hadamard_dtype)
         attn_output = torch.empty_like(q)
         if self.disable_quant:
@@ -249,6 +256,29 @@ class MultiLayerPagedKVCache4Bit(Cache):
         self._persistent_metadata_enabled = (
             os.getenv("QUAROT_PERSISTENT_KV_METADATA", "1") != "0")
         self._cuda_graph_decode = False
+        self._static_metadata_enabled = (
+            os.getenv("QUAROT_STATIC_KV_METADATA", "0") != "0"
+            and hasattr(_HIP, "verification_metadata"))
+        self._verification_graph_capture = False
+        self._metadata_prepared_key = None
+        self._active_chunk_metadata = None
+        self._chunk_metadata = {}
+        if self._static_metadata_enabled:
+            self._metadata_base = torch.empty((), device=device, dtype=torch.int64)
+            for rows in (1, 15, 16):
+                def integers(size):
+                    return torch.empty(size, device=device, dtype=torch.int32)
+                self._chunk_metadata[rows] = {
+                    "positions": torch.empty(rows, device=device, dtype=torch.int64),
+                    "append": dict(kv_data=self.pages, kv_param=self.scales,
+                        kv_indptr=integers(batch_size + 1),
+                        kv_indices=integers(batch_size * max_page_cnt),
+                        last_page_offset=integers(batch_size)),
+                    "causal": dict(kv_data=self.pages, kv_param=self.scales,
+                        kv_indptr=integers(batch_size * rows + 1),
+                        kv_indices=integers(batch_size * rows * max_page_cnt),
+                        last_page_offset=integers(batch_size * rows)),
+                }
         if self._persistent_metadata_enabled:
             lengths = torch.arange(
                 max_seq_len + 1, device=device, dtype=torch.int32)
@@ -293,6 +323,37 @@ class MultiLayerPagedKVCache4Bit(Cache):
                 "cache transactions cannot use graph decode metadata")
         return CacheTransaction(self)
 
+    def prepare_verification_metadata(self, rows):
+        """Update shared fixed buffers once per forward, including after rollback."""
+        if (not self._static_metadata_enabled or self._cuda_graph_decode
+                or rows not in self._chunk_metadata):
+            self._active_chunk_metadata = None
+            self._metadata_prepared_key = None
+            return None
+        if self.length < 0 or self.length + rows > self.max_seq_len:
+            raise ValueError("verification exceeds KV cache capacity")
+        metadata = self._chunk_metadata[rows]
+        if not self._verification_graph_capture:
+            self._metadata_base.fill_(self.length)
+        append, causal = metadata["append"], metadata["causal"]
+        _HIP.verification_metadata(
+            self._metadata_base, metadata["positions"],
+            append["kv_indptr"], append["kv_indices"], append["last_page_offset"],
+            causal["kv_indptr"], causal["kv_indices"], causal["last_page_offset"],
+            self.batch_size, self.page_size,
+            self.page_cnt_from_length(self.max_seq_len))
+        self._active_chunk_metadata = metadata
+        self._metadata_prepared_key = (self.length, rows)
+        return metadata["positions"]
+
+    def _prepare_layer_metadata(self, layer_idx, rows, attention_mask):
+        if layer_idx == 0:
+            if attention_mask is not None:
+                self._active_chunk_metadata = None
+                self._metadata_prepared_key = None
+            elif self._metadata_prepared_key != (self.length, rows):
+                self.prepare_verification_metadata(rows)
+
     def update(
         self,
         key_states: torch.Tensor,
@@ -303,6 +364,8 @@ class MultiLayerPagedKVCache4Bit(Cache):
         cache_kwargs = cache_kwargs or {}
 
         b_sz, added_length, num_heads, head_dim = key_states.shape
+        self._prepare_layer_metadata(
+            layer_idx, added_length, cache_kwargs.get("attention_mask"))
         if num_heads != self.num_kv_heads:
             raise ValueError("KV tensor head count does not match cache configuration")
 
@@ -456,11 +519,46 @@ class MultiLayerPagedKVCache4Bit(Cache):
             and self._transaction is None
             and not self._needs_init[layer_idx])
 
+    def can_fuse_chunk(self, layer_idx, attention_mask, rows):
+        return (rows in (1, 15, 16) and self.fused_decode_append
+                and self.native_gqa and attention_mask is None
+                and not self.disable_quant and self.hadamard_dtype == torch.float16
+                and not self._needs_init[layer_idx]
+                and hasattr(_HIP, "chunk_q_norm_rope_hadamard"))
+
+    def update_fused_chunk(self, query, key, value, cos, sin, layer_idx,
+                           q_weight, k_weight, q_eps, k_eps):
+        batch, rows, kv_heads, head_dim = key.shape
+        if (not self.can_fuse_chunk(layer_idx, None, rows)
+                or batch != self.batch_size or head_dim != 128
+                or kv_heads != self.num_kv_heads or query.shape[2] != self.num_q_heads):
+            raise ValueError("unsupported fused chunk configuration")
+        self._prepare_layer_metadata(layer_idx, rows, None)
+        if layer_idx == 0:
+            if self.length + rows > self.max_seq_len:
+                raise ValueError("KV cache capacity exceeded")
+            self.length += rows
+            if self._transaction is not None:
+                self._transaction.proposed_length = self.length
+        specs = self.get_cache_specs_for_flash_infer(None)
+        query_out = _HIP.chunk_q_norm_rope_hadamard(
+            query, q_weight, cos.contiguous(), sin.contiguous(), q_eps)
+        _HIP.chunk_k_norm_rope_append_i4(
+            key, value, k_weight, cos.contiguous(), sin.contiguous(),
+            specs["kv_data"], specs["kv_param"], specs["kv_indptr"],
+            specs["kv_indices"], specs["last_page_offset"], layer_idx, k_eps)
+        attention = functools.partial(
+            self._stub.forward, num_kv_heads=kv_heads,
+            attention_kwargs=(self.get_virtual_cache_specs(rows) if rows > 1 else specs),
+            layer_idx=layer_idx, hadamard_applied=True)
+        return query_out, attention
+
     def update_fused_k1(
             self, query_states, key_states, value_states, cos, sin, layer_idx):
         """Decode-only Q/K RoPE plus direct native-GQA KV4 append."""
         batch, added_length, kv_heads, head_dim = key_states.shape
         query_heads = query_states.shape[2]
+        self._prepare_layer_metadata(layer_idx, added_length, None)
         if (added_length != 1 or batch != self.batch_size
                 or kv_heads != self.num_kv_heads
                 or query_heads != self.num_q_heads
@@ -490,6 +588,9 @@ class MultiLayerPagedKVCache4Bit(Cache):
 
     def get_virtual_cache_specs(self, chunk_length):
         """Build causal paged metadata for B*chunk independent decode rows."""
+        if (self._active_chunk_metadata is not None and
+                self._metadata_prepared_key == (self.length - chunk_length, chunk_length)):
+            return self._active_chunk_metadata["causal"]
         if chunk_length < 1:
             raise ValueError("chunk_length must be positive")
         start = self.length - chunk_length
@@ -520,6 +621,9 @@ class MultiLayerPagedKVCache4Bit(Cache):
     def get_cache_specs_for_flash_infer(self, attention_mask):
         if attention_mask is None and self._cuda_graph_decode:
             return self._cuda_graph_specs
+        if (attention_mask is None and self._active_chunk_metadata is not None
+                and sum(self._metadata_prepared_key) == self.length):
+            return self._active_chunk_metadata["append"]
         if attention_mask is None and self._persistent_metadata_enabled:
             if self.length > self.max_seq_len:
                 raise ValueError("cache length exceeds preallocated metadata")

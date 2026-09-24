@@ -1,0 +1,15 @@
+Running 229 items in this shard
+........................................................................ [ 31%]
+........................................................................ [ 62%]
+........................................................................ [ 94%]
+.............                                                            [100%]
+=============================== warnings summary ===============================
+../../opt/venv/lib/python3.10/site-packages/triton/runtime/autotuner.py:99
+../../opt/venv/lib/python3.10/site-packages/triton/runtime/autotuner.py:99
+../../opt/venv/lib/python3.10/site-packages/triton/runtime/autotuner.py:99
+../../opt/venv/lib/python3.10/site-packages/triton/runtime/autotuner.py:99
+  /opt/venv/lib/python3.10/site-packages/triton/runtime/autotuner.py:99: DeprecationWarning: warmup, rep, and use_cuda_graph parameters are deprecated. See https://github.com/triton-lang/triton/pull/4496 for details.
+    warnings.warn(("warmup, rep, and use_cuda_graph parameters are deprecated. See "
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+229 passed, 4 warnings in 6.78s

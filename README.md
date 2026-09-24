@@ -2,6 +2,25 @@
 # <img src="img/carrot.png" alt="Your Image" width="40" height="45">QuaRot: Outlier-Free 4-Bit Inference in Rotated LLMs
 This repository contains the code for [**QuaRot**: Outlier-Free 4-Bit Inference in Rotated LLMs](https://arxiv.org/abs/2404.00456).
 
+## PARD-2 verification optimization (2026-09-24)
+
+**Fused-only inference is supported:** `--mode ar` keeps the fused W4A4KV4
+target and does not load a PARD-2 drafter. See the
+[fused-only / PARD-2 execution and path guide (中文)](e2e/FUSED_ONLY_AND_PARD2_ZH.md)
+for host/container paths, generation commands, benchmark commands, and fallbacks.
+
+The [Chinese measurement report](verification_optimization_20260924/report_zh.md)
+compares safe batched H128, exact row norm/INT4 packing, shared GPU KV metadata,
+M15/M16 verification graphs, and fused Q/KV preprocessing. It includes independent
+and cumulative A/B results, correctness coverage, kernel design, and scope limits.
+Use the [reproduction commands](verification_optimization_20260924/README.md) to
+build, test, measure, or launch the measured configuration; each optimization has
+an explicit fallback switch.
+
+The separate [current AR versus PARD-2 phase benchmark](pard2_speedup_20260924/README.md)
+has reproducible scripts but **no completed measurements yet**: its first attempt
+timed out waiting for an idle GPU. The verification A/B speedups above compare
+PARD-2 implementations; they are not PARD-2-versus-AR speedups.
 
 
 ## Abstract

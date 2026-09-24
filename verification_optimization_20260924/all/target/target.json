@@ -1,0 +1,791 @@
+{
+  "scope": "target-only verification shape; exact-row RMSNorm; no drafter/TD collector",
+  "gpu_preflight": {
+    "free_bytes": 34139537408,
+    "total_bytes": 34208743424,
+    "preexisting_bytes": 69206016,
+    "memory_snapshot": {
+      "stage": "preflight",
+      "allocated_bytes": 0,
+      "reserved_bytes": 0,
+      "max_allocated_bytes": 0,
+      "max_reserved_bytes": 0,
+      "device_free_bytes": 34139537408,
+      "device_total_bytes": 34208743424,
+      "device_used_bytes": 69206016,
+      "global_used_bytes": 69206016
+    }
+  },
+  "model": "/workspace_root/qwen3_8b_fused_v1_rtn_w4a4kv4",
+  "torch": "2.9.1+git5bc97ba",
+  "hip": "7.2.26015-fc0010cf6a",
+  "gpu": "",
+  "extension_sha256": "517c5f4612834902327962cf249f9868068b27f1db2db53909bc7f85d253fed8",
+  "flags": {
+    "QUAROT_BATCHED_H128": "1",
+    "QUAROT_STATIC_KV_METADATA": "1",
+    "QUAROT_VERIFICATION_GRAPH": "1",
+    "QUAROT_CHUNK_PREPROCESS": "1"
+  },
+  "fused_norm_quant": true,
+  "warmups": 3,
+  "samples": 6,
+  "cases": {
+    "context127_M1": {
+      "context": 127,
+      "rows": 1,
+      "all_kernel_launches": 482,
+      "trace_gpu_kernel_events": 482,
+      "kernel_count_source": "GPU trace",
+      "cpu_launch_api_calls": 482,
+      "cpu_launch_api_histogram": {
+        "hipLaunchKernel": 480,
+        "hipExtModuleLaunchKernel": 2
+      },
+      "gpu_memcpy_events": 0,
+      "kernel_duration_sum_us": 17837.211999999996,
+      "kernel_histogram": {
+        "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<long>, std::array<char*, 1ul> >(int, at::native::FillFunctor<long>, std::array<char*, 1ul>)": 1,
+        "(anonymous namespace)::metadata_kernel(long const*, long*, int*, int*, int*, int*, int*, int*, int, int, int)": 1,
+        "void at::native::(anonymous namespace)::indexSelectSmallIndex<c10::Half, long, unsigned int, 2, 2, -2>(at::cuda::detail::TensorInfo<c10::Half, unsigned int>, at::cuda::detail::TensorInfo<c10::Half const, unsigned int>, at::cuda::detail::TensorInfo<long const, unsigned int>, int, int, unsigned int, long)": 1,
+        "void at::native::elementwise_kernel_manual_unroll<128, 4, at::native::gpu_kernel_impl<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#7}::operator()() const::{lambda(float)#1}>(at::TensorIteratorBase&, at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#7}::operator()() const::{lambda(float)#1} const&)::{lambda(int, bool)#1}>(int, at::native::gpu_kernel_impl<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#7}::operator()() const::{lambda(float)#1}>(at::TensorIteratorBase&, at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#7}::operator()() const::{lambda(float)#1} const&)::{lambda(int, bool)#1})": 1,
+        "Cijk_Alik_Bljk_S_B_Bias_HA_S_SAV_UserArgs_MT16x16x16_SN_LDSB0_AFC1_AFEM1_AFEM1_ASEM1_CLR0_CADS0_DTLA0_DTLB0_DTVA0_DTVB0_EPS1_FDSI0_GRPM1_GRVWA1_GRVWB1_GSUAMB_GLS0_ISA1201_IU1_K1_LDSTI0_LBSPPA0_LBSPPB0_LBSPPM0_LPA0_LPB0_LPM0_LRVW1_LWPMn1_MIAV0_MO40_NTn1_NTA0_NTB0_NTC0_NTD0_NTM0_NEPBS0_NLCA1_NLCB1_ONLL1_PGR1_PLR0_PKA0_SIA1_SS0_SPO0_SRVW0_SSO0_SVW1_SK0_SKFTR0_SKXCCM0_TT2_2_TLDS0_ULSGRO0_USL1_UIOFGRO0_USFGROn1_VSn1_VWA1_VWB1_WSGRA0_WSGRB0_WS64_WG8_8_1": 1,
+        "void at::native::(anonymous namespace)::CatArrayBatchedCopy_contig<at::native::(anonymous namespace)::OpaqueType<4u>, unsigned int, 3, 128, 1>(at::native::(anonymous namespace)::OpaqueType<4u>*, at::native::(anonymous namespace)::CatArrInputTensorMetadata<at::native::(anonymous namespace)::OpaqueType<4u>, unsigned int, 128, 1>, at::native::(anonymous namespace)::TensorSizeStride<unsigned int, 4u>, int, unsigned int)": 1,
+        "void at::native::vectorized_elementwise_kernel<4, at::native::cos_kernel_cuda(at::TensorIteratorBase&)::{lambda()#2}::operator()() const::{lambda()#2}::operator()() const::{lambda(float)#1}, std::array<char*, 2ul> >(int, at::native::cos_kernel_cuda(at::TensorIteratorBase&)::{lambda()#2}::operator()() const::{lambda()#2}::operator()() const::{lambda(float)#1}, std::array<char*, 2ul>)": 1,
+        "void at::native::vectorized_elementwise_kernel<4, at::native::AUnaryFunctor<float, float, float, at::native::binary_internal::MulFunctor<float> >, std::array<char*, 2ul> >(int, at::native::AUnaryFunctor<float, float, float, at::native::binary_internal::MulFunctor<float> >, std::array<char*, 2ul>)": 2,
+        "void at::native::vectorized_elementwise_kernel<4, at::native::sin_kernel_cuda(at::TensorIteratorBase&)::{lambda()#2}::operator()() const::{lambda()#2}::operator()() const::{lambda(float)#1}, std::array<char*, 2ul> >(int, at::native::sin_kernel_cuda(at::TensorIteratorBase&)::{lambda()#2}::operator()() const::{lambda()#2}::operator()() const::{lambda(float)#1}, std::array<char*, 2ul>)": 1,
+        "void at::native::vectorized_elementwise_kernel<4, at::native::float16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul> >(int, at::native::float16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul>)": 2,
+        "void (anonymous namespace)::rms_norm_quant_i4_rows_kernel<true, false>(__half const*, __half const*, __half*, unsigned char*, __half*, int, int, float, float, float)": 72,
+        "void (anonymous namespace)::bpre_multi_scale_kernel<1u>(unsigned char const*, unsigned char const*, unsigned char const*, unsigned char const*, __half const*, __half const*, __half const*, __half const*, __half*, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, bool)": 72,
+        "(anonymous namespace)::chunk_q_norm_rope_h128_kernel(__half const*, __half const*, __half const*, __half const*, __half*, (anonymous namespace)::Strides4, int, int, int, float)": 36,
+        "(anonymous namespace)::chunk_k_norm_rope_append_kernel(__half const*, __half const*, __half const*, __half const*, __half const*, unsigned char*, __half2*, int const*, int const*, int const*, (anonymous namespace)::Strides4, (anonymous namespace)::Strides4, int, int, int, int, int, float)": 36,
+        "void flashinfer::BatchDecodeWithPagedKVCacheKernel<(flashinfer::RotaryMode)0, false, 16ul, 8ul, 16ul, 2ul, __half, flashinfer::quant::__precision__s4, __half, int>(__half*, flashinfer::paged_kv_t<flashinfer::quant::__precision__s4, int>, __half*, unsigned long, float, float, float)": 36,
+        "(anonymous namespace)::fused_attention_hadamard_quant_kernel(__half const*, unsigned char*, __half*, int, int, int)": 36,
+        "void (anonymous namespace)::bpre_grouped_scale_kernel<1u, 4u>(unsigned char const*, unsigned char const*, __half const*, __half const*, __half*, unsigned int, unsigned int, unsigned int, unsigned int)": 72,
+        "void at::native::vectorized_elementwise_kernel<8, at::native::CUDAFunctor_add<c10::Half>, std::array<char*, 3ul> >(int, at::native::CUDAFunctor_add<c10::Half>, std::array<char*, 3ul>)": 72,
+        "(anonymous namespace)::fused_ffn_silu_hadamard_quant_single_fp16lds_kernel(__half const*, __half const*, __half const*, unsigned char*, __half*, int, int, int, int)": 36,
+        "(anonymous namespace)::rms_norm_rows_kernel(__half const*, __half*, int, int, float, float)": 1,
+        "Cijk_Alik_Bljk_HHS_BH_Bias_HA_S_SAV_UserArgs_MT128x128x32_MI16x16x1_SN_LDSB0_AFC1_AFEM1_AFEM1_ASEM1_CLR0_CADS0_DTLA0_DTLB0_DTVA0_DTVB1_EPS0_FDSI0_GRPM1_GRVWA4_GRVWB8_GSUAMB_GLS0_ISA1201_IU1_K1_LDSTI0_LBSPPA128_LBSPPB0_LBSPPM0_LPA16_LPB0_LPM0_LRVW8_LWPMn1_MIAV1_MIWT4_4_MO40_NTn1_NTA0_NTB0_NTC0_NTD0_NTM0_NEPBS0_NLCA1_NLCB2_ONLL1_PGR2_PLR1_PKA0_SIA3_SS0_SPO0_SRVW0_SSO0_SVW8_SK0_SKFTR0_SKXCCM0_TLDS1_ULSGRO0_USL1_UIOFGRO0_USFGROn1_VSn1_VWA1_VWB1_WSGRA0_WSGRB0_WS32_WG32_4_1": 1
+      },
+      "event_ms": [
+        18.777040481567383,
+        18.804672241210938,
+        17.79103660583496,
+        17.787885665893555,
+        17.81440544128418,
+        17.862863540649414
+      ],
+      "wall_ms": [
+        19.00017447769642,
+        18.83850898593664,
+        17.83002819865942,
+        17.82042905688286,
+        17.84655638039112,
+        17.895333468914032
+      ],
+      "verification_graph_captures": [],
+      "event_ms_median": 17.838634490966797,
+      "wall_ms_median": 17.870944924652576,
+      "baseline_logits_max_abs": 0.0,
+      "baseline_logits_bit_exact": true,
+      "sequential_logits_max_abs": 0.0,
+      "checks": {
+        "finite_logits": true,
+        "baseline_pages": true,
+        "baseline_scales": true,
+        "baseline_argmax": true,
+        "sequential_pages": true,
+        "sequential_scales": true,
+        "sequential_argmax": true,
+        "rollback0_logits": true,
+        "rollback0_pages": true,
+        "rollback0_scales": true
+      }
+    },
+    "context127_M15": {
+      "context": 127,
+      "rows": 15,
+      "all_kernel_launches": 554,
+      "trace_gpu_kernel_events": 0,
+      "kernel_count_source": "HIP graph kernel nodes + external kernel launch APIs",
+      "cpu_launch_api_calls": 2,
+      "cpu_launch_api_histogram": {
+        "hipLaunchKernel": 1,
+        "hipGraphLaunch": 1
+      },
+      "gpu_memcpy_events": 0,
+      "kernel_duration_sum_us": null,
+      "kernel_histogram": {},
+      "event_ms": [
+        18.979555130004883,
+        19.043758392333984,
+        19.00891876220703,
+        18.918119430541992,
+        18.987756729125977,
+        18.937517166137695
+      ],
+      "wall_ms": [
+        19.031123258173466,
+        19.07496154308319,
+        19.05512996017933,
+        18.963809125125408,
+        19.017698243260384,
+        18.984300084412098
+      ],
+      "verification_graph_captures": [
+        {
+          "rows": 15,
+          "capture_ms": 98.39238319545984,
+          "node_metadata": {
+            "source": "HIP graph node enumeration, recursively including child graphs",
+            "node_types": {
+              "kernel": 553
+            },
+            "kernel_nodes": 553,
+            "total_nodes_including_child_containers": 553
+          }
+        }
+      ],
+      "actual_graph_kernel_nodes": 553,
+      "external_kernel_launches": 1,
+      "trace_gpu_kernel_events_complete": false,
+      "trace_kernel_duration_sum_us": 0,
+      "kernel_histogram_source": "incomplete graph replay GPU trace",
+      "event_ms_median": 18.98365592956543,
+      "wall_ms_median": 19.024410750716925,
+      "baseline_logits_max_abs": 0.0,
+      "baseline_logits_bit_exact": true,
+      "sequential_logits_max_abs": 0.0,
+      "checks": {
+        "finite_logits": true,
+        "baseline_pages": true,
+        "baseline_scales": true,
+        "baseline_argmax": true,
+        "sequential_pages": true,
+        "sequential_scales": true,
+        "sequential_argmax": true,
+        "causal_future_token": true,
+        "rollback0_logits": true,
+        "rollback0_pages": true,
+        "rollback0_scales": true,
+        "rollback7_logits": true,
+        "rollback7_pages": true,
+        "rollback7_scales": true
+      }
+    },
+    "context127_M16": {
+      "context": 127,
+      "rows": 16,
+      "all_kernel_launches": 554,
+      "trace_gpu_kernel_events": 0,
+      "kernel_count_source": "HIP graph kernel nodes + external kernel launch APIs",
+      "cpu_launch_api_calls": 2,
+      "cpu_launch_api_histogram": {
+        "hipLaunchKernel": 1,
+        "hipGraphLaunch": 1
+      },
+      "gpu_memcpy_events": 0,
+      "kernel_duration_sum_us": null,
+      "kernel_histogram": {},
+      "event_ms": [
+        19.088075637817383,
+        19.05203628540039,
+        19.021120071411133,
+        19.107755661010742,
+        18.982358932495117,
+        19.030115127563477
+      ],
+      "wall_ms": [
+        19.14068963378668,
+        19.086146727204323,
+        19.053089432418346,
+        19.139290787279606,
+        19.019050523638725,
+        19.061127677559853
+      ],
+      "verification_graph_captures": [
+        {
+          "rows": 15,
+          "capture_ms": 98.39238319545984,
+          "node_metadata": {
+            "source": "HIP graph node enumeration, recursively including child graphs",
+            "node_types": {
+              "kernel": 553
+            },
+            "kernel_nodes": 553,
+            "total_nodes_including_child_containers": 553
+          }
+        },
+        {
+          "rows": 16,
+          "capture_ms": 53.43505088239908,
+          "node_metadata": {
+            "source": "HIP graph node enumeration, recursively including child graphs",
+            "node_types": {
+              "kernel": 553
+            },
+            "kernel_nodes": 553,
+            "total_nodes_including_child_containers": 553
+          }
+        }
+      ],
+      "actual_graph_kernel_nodes": 553,
+      "external_kernel_launches": 1,
+      "trace_gpu_kernel_events_complete": false,
+      "trace_kernel_duration_sum_us": 0,
+      "kernel_histogram_source": "incomplete graph replay GPU trace",
+      "event_ms_median": 19.041075706481934,
+      "wall_ms_median": 19.073637202382088,
+      "baseline_logits_max_abs": 0.0,
+      "baseline_logits_bit_exact": true,
+      "sequential_logits_max_abs": 0.0,
+      "checks": {
+        "finite_logits": true,
+        "baseline_pages": true,
+        "baseline_scales": true,
+        "baseline_argmax": true,
+        "sequential_pages": true,
+        "sequential_scales": true,
+        "sequential_argmax": true,
+        "causal_future_token": true,
+        "rollback0_logits": true,
+        "rollback0_pages": true,
+        "rollback0_scales": true,
+        "rollback8_logits": true,
+        "rollback8_pages": true,
+        "rollback8_scales": true
+      }
+    },
+    "context128_M1": {
+      "context": 128,
+      "rows": 1,
+      "all_kernel_launches": 482,
+      "trace_gpu_kernel_events": 482,
+      "kernel_count_source": "GPU trace",
+      "cpu_launch_api_calls": 482,
+      "cpu_launch_api_histogram": {
+        "hipLaunchKernel": 480,
+        "hipExtModuleLaunchKernel": 2
+      },
+      "gpu_memcpy_events": 0,
+      "kernel_duration_sum_us": 16664.996000000003,
+      "kernel_histogram": {
+        "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<long>, std::array<char*, 1ul> >(int, at::native::FillFunctor<long>, std::array<char*, 1ul>)": 1,
+        "(anonymous namespace)::metadata_kernel(long const*, long*, int*, int*, int*, int*, int*, int*, int, int, int)": 1,
+        "void at::native::(anonymous namespace)::indexSelectSmallIndex<c10::Half, long, unsigned int, 2, 2, -2>(at::cuda::detail::TensorInfo<c10::Half, unsigned int>, at::cuda::detail::TensorInfo<c10::Half const, unsigned int>, at::cuda::detail::TensorInfo<long const, unsigned int>, int, int, unsigned int, long)": 1,
+        "void at::native::elementwise_kernel_manual_unroll<128, 4, at::native::gpu_kernel_impl<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#7}::operator()() const::{lambda(float)#1}>(at::TensorIteratorBase&, at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#7}::operator()() const::{lambda(float)#1} const&)::{lambda(int, bool)#1}>(int, at::native::gpu_kernel_impl<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#7}::operator()() const::{lambda(float)#1}>(at::TensorIteratorBase&, at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#7}::operator()() const::{lambda(float)#1} const&)::{lambda(int, bool)#1})": 1,
+        "Cijk_Alik_Bljk_S_B_Bias_HA_S_SAV_UserArgs_MT16x16x16_SN_LDSB0_AFC1_AFEM1_AFEM1_ASEM1_CLR0_CADS0_DTLA0_DTLB0_DTVA0_DTVB0_EPS1_FDSI0_GRPM1_GRVWA1_GRVWB1_GSUAMB_GLS0_ISA1201_IU1_K1_LDSTI0_LBSPPA0_LBSPPB0_LBSPPM0_LPA0_LPB0_LPM0_LRVW1_LWPMn1_MIAV0_MO40_NTn1_NTA0_NTB0_NTC0_NTD0_NTM0_NEPBS0_NLCA1_NLCB1_ONLL1_PGR1_PLR0_PKA0_SIA1_SS0_SPO0_SRVW0_SSO0_SVW1_SK0_SKFTR0_SKXCCM0_TT2_2_TLDS0_ULSGRO0_USL1_UIOFGRO0_USFGROn1_VSn1_VWA1_VWB1_WSGRA0_WSGRB0_WS64_WG8_8_1": 1,
+        "void at::native::(anonymous namespace)::CatArrayBatchedCopy_contig<at::native::(anonymous namespace)::OpaqueType<4u>, unsigned int, 3, 128, 1>(at::native::(anonymous namespace)::OpaqueType<4u>*, at::native::(anonymous namespace)::CatArrInputTensorMetadata<at::native::(anonymous namespace)::OpaqueType<4u>, unsigned int, 128, 1>, at::native::(anonymous namespace)::TensorSizeStride<unsigned int, 4u>, int, unsigned int)": 1,
+        "void at::native::vectorized_elementwise_kernel<4, at::native::cos_kernel_cuda(at::TensorIteratorBase&)::{lambda()#2}::operator()() const::{lambda()#2}::operator()() const::{lambda(float)#1}, std::array<char*, 2ul> >(int, at::native::cos_kernel_cuda(at::TensorIteratorBase&)::{lambda()#2}::operator()() const::{lambda()#2}::operator()() const::{lambda(float)#1}, std::array<char*, 2ul>)": 1,
+        "void at::native::vectorized_elementwise_kernel<4, at::native::AUnaryFunctor<float, float, float, at::native::binary_internal::MulFunctor<float> >, std::array<char*, 2ul> >(int, at::native::AUnaryFunctor<float, float, float, at::native::binary_internal::MulFunctor<float> >, std::array<char*, 2ul>)": 2,
+        "void at::native::vectorized_elementwise_kernel<4, at::native::sin_kernel_cuda(at::TensorIteratorBase&)::{lambda()#2}::operator()() const::{lambda()#2}::operator()() const::{lambda(float)#1}, std::array<char*, 2ul> >(int, at::native::sin_kernel_cuda(at::TensorIteratorBase&)::{lambda()#2}::operator()() const::{lambda()#2}::operator()() const::{lambda(float)#1}, std::array<char*, 2ul>)": 1,
+        "void at::native::vectorized_elementwise_kernel<4, at::native::float16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul> >(int, at::native::float16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul>)": 2,
+        "void (anonymous namespace)::rms_norm_quant_i4_rows_kernel<true, false>(__half const*, __half const*, __half*, unsigned char*, __half*, int, int, float, float, float)": 72,
+        "void (anonymous namespace)::bpre_multi_scale_kernel<1u>(unsigned char const*, unsigned char const*, unsigned char const*, unsigned char const*, __half const*, __half const*, __half const*, __half const*, __half*, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, bool)": 72,
+        "(anonymous namespace)::chunk_q_norm_rope_h128_kernel(__half const*, __half const*, __half const*, __half const*, __half*, (anonymous namespace)::Strides4, int, int, int, float)": 36,
+        "(anonymous namespace)::chunk_k_norm_rope_append_kernel(__half const*, __half const*, __half const*, __half const*, __half const*, unsigned char*, __half2*, int const*, int const*, int const*, (anonymous namespace)::Strides4, (anonymous namespace)::Strides4, int, int, int, int, int, float)": 36,
+        "void flashinfer::BatchDecodeWithPagedKVCacheKernel<(flashinfer::RotaryMode)0, false, 16ul, 8ul, 16ul, 2ul, __half, flashinfer::quant::__precision__s4, __half, int>(__half*, flashinfer::paged_kv_t<flashinfer::quant::__precision__s4, int>, __half*, unsigned long, float, float, float)": 36,
+        "(anonymous namespace)::fused_attention_hadamard_quant_kernel(__half const*, unsigned char*, __half*, int, int, int)": 36,
+        "void (anonymous namespace)::bpre_grouped_scale_kernel<1u, 4u>(unsigned char const*, unsigned char const*, __half const*, __half const*, __half*, unsigned int, unsigned int, unsigned int, unsigned int)": 72,
+        "void at::native::vectorized_elementwise_kernel<8, at::native::CUDAFunctor_add<c10::Half>, std::array<char*, 3ul> >(int, at::native::CUDAFunctor_add<c10::Half>, std::array<char*, 3ul>)": 72,
+        "(anonymous namespace)::fused_ffn_silu_hadamard_quant_single_fp16lds_kernel(__half const*, __half const*, __half const*, unsigned char*, __half*, int, int, int, int)": 36,
+        "(anonymous namespace)::rms_norm_rows_kernel(__half const*, __half*, int, int, float, float)": 1,
+        "Cijk_Alik_Bljk_HHS_BH_Bias_HA_S_SAV_UserArgs_MT128x128x32_MI16x16x1_SN_LDSB0_AFC1_AFEM1_AFEM1_ASEM1_CLR0_CADS0_DTLA0_DTLB0_DTVA0_DTVB1_EPS0_FDSI0_GRPM1_GRVWA4_GRVWB8_GSUAMB_GLS0_ISA1201_IU1_K1_LDSTI0_LBSPPA128_LBSPPB0_LBSPPM0_LPA16_LPB0_LPM0_LRVW8_LWPMn1_MIAV1_MIWT4_4_MO40_NTn1_NTA0_NTB0_NTC0_NTD0_NTM0_NEPBS0_NLCA1_NLCB2_ONLL1_PGR2_PLR1_PKA0_SIA3_SS0_SPO0_SRVW0_SSO0_SVW8_SK0_SKFTR0_SKXCCM0_TLDS1_ULSGRO0_USL1_UIOFGRO0_USFGROn1_VSn1_VWA1_VWB1_WSGRA0_WSGRB0_WS32_WG32_4_1": 1
+      },
+      "event_ms": [
+        18.893400192260742,
+        19.330123901367188,
+        17.93576431274414,
+        17.95319366455078,
+        17.95599365234375,
+        17.95160484313965
+      ],
+      "wall_ms": [
+        19.226965494453907,
+        19.36686411499977,
+        17.971526831388474,
+        17.98788271844387,
+        17.99039077013731,
+        17.997357062995434
+      ],
+      "verification_graph_captures": [
+        {
+          "rows": 15,
+          "capture_ms": 98.39238319545984,
+          "node_metadata": {
+            "source": "HIP graph node enumeration, recursively including child graphs",
+            "node_types": {
+              "kernel": 553
+            },
+            "kernel_nodes": 553,
+            "total_nodes_including_child_containers": 553
+          }
+        },
+        {
+          "rows": 16,
+          "capture_ms": 53.43505088239908,
+          "node_metadata": {
+            "source": "HIP graph node enumeration, recursively including child graphs",
+            "node_types": {
+              "kernel": 553
+            },
+            "kernel_nodes": 553,
+            "total_nodes_including_child_containers": 553
+          }
+        }
+      ],
+      "event_ms_median": 17.954593658447266,
+      "wall_ms_median": 17.993873916566372,
+      "baseline_logits_max_abs": 0.0,
+      "baseline_logits_bit_exact": true,
+      "sequential_logits_max_abs": 0.0,
+      "checks": {
+        "finite_logits": true,
+        "baseline_pages": true,
+        "baseline_scales": true,
+        "baseline_argmax": true,
+        "sequential_pages": true,
+        "sequential_scales": true,
+        "sequential_argmax": true,
+        "rollback0_logits": true,
+        "rollback0_pages": true,
+        "rollback0_scales": true
+      }
+    },
+    "context128_M15": {
+      "context": 128,
+      "rows": 15,
+      "all_kernel_launches": 554,
+      "trace_gpu_kernel_events": 0,
+      "kernel_count_source": "HIP graph kernel nodes + external kernel launch APIs",
+      "cpu_launch_api_calls": 2,
+      "cpu_launch_api_histogram": {
+        "hipLaunchKernel": 1,
+        "hipGraphLaunch": 1
+      },
+      "gpu_memcpy_events": 0,
+      "kernel_duration_sum_us": null,
+      "kernel_histogram": {},
+      "event_ms": [
+        19.049598693847656,
+        18.987077713012695,
+        18.96487808227539,
+        18.96611976623535,
+        18.965560913085938,
+        18.98455810546875
+      ],
+      "wall_ms": [
+        19.099634140729904,
+        19.021134823560715,
+        18.997293896973133,
+        19.012642093002796,
+        18.999717198312283,
+        19.019396975636482
+      ],
+      "verification_graph_captures": [
+        {
+          "rows": 15,
+          "capture_ms": 98.39238319545984,
+          "node_metadata": {
+            "source": "HIP graph node enumeration, recursively including child graphs",
+            "node_types": {
+              "kernel": 553
+            },
+            "kernel_nodes": 553,
+            "total_nodes_including_child_containers": 553
+          }
+        },
+        {
+          "rows": 16,
+          "capture_ms": 53.43505088239908,
+          "node_metadata": {
+            "source": "HIP graph node enumeration, recursively including child graphs",
+            "node_types": {
+              "kernel": 553
+            },
+            "kernel_nodes": 553,
+            "total_nodes_including_child_containers": 553
+          }
+        }
+      ],
+      "actual_graph_kernel_nodes": 553,
+      "external_kernel_launches": 1,
+      "trace_gpu_kernel_events_complete": false,
+      "trace_kernel_duration_sum_us": 0,
+      "kernel_histogram_source": "incomplete graph replay GPU trace",
+      "event_ms_median": 18.97533893585205,
+      "wall_ms_median": 19.01601953431964,
+      "baseline_logits_max_abs": 0.0,
+      "baseline_logits_bit_exact": true,
+      "sequential_logits_max_abs": 0.0,
+      "checks": {
+        "finite_logits": true,
+        "baseline_pages": true,
+        "baseline_scales": true,
+        "baseline_argmax": true,
+        "sequential_pages": true,
+        "sequential_scales": true,
+        "sequential_argmax": true,
+        "causal_future_token": true,
+        "rollback0_logits": true,
+        "rollback0_pages": true,
+        "rollback0_scales": true,
+        "rollback7_logits": true,
+        "rollback7_pages": true,
+        "rollback7_scales": true
+      }
+    },
+    "context128_M16": {
+      "context": 128,
+      "rows": 16,
+      "all_kernel_launches": 554,
+      "trace_gpu_kernel_events": 0,
+      "kernel_count_source": "HIP graph kernel nodes + external kernel launch APIs",
+      "cpu_launch_api_calls": 2,
+      "cpu_launch_api_histogram": {
+        "hipLaunchKernel": 1,
+        "hipGraphLaunch": 1
+      },
+      "gpu_memcpy_events": 0,
+      "kernel_duration_sum_us": null,
+      "kernel_histogram": {},
+      "event_ms": [
+        19.09423828125,
+        19.049196243286133,
+        19.03976058959961,
+        19.030078887939453,
+        19.041717529296875,
+        19.02603530883789
+      ],
+      "wall_ms": [
+        19.146494567394257,
+        19.081114791333675,
+        19.08696163445711,
+        19.06144991517067,
+        19.129013642668724,
+        19.05759982764721
+      ],
+      "verification_graph_captures": [
+        {
+          "rows": 15,
+          "capture_ms": 98.39238319545984,
+          "node_metadata": {
+            "source": "HIP graph node enumeration, recursively including child graphs",
+            "node_types": {
+              "kernel": 553
+            },
+            "kernel_nodes": 553,
+            "total_nodes_including_child_containers": 553
+          }
+        },
+        {
+          "rows": 16,
+          "capture_ms": 53.43505088239908,
+          "node_metadata": {
+            "source": "HIP graph node enumeration, recursively including child graphs",
+            "node_types": {
+              "kernel": 553
+            },
+            "kernel_nodes": 553,
+            "total_nodes_including_child_containers": 553
+          }
+        }
+      ],
+      "actual_graph_kernel_nodes": 553,
+      "external_kernel_launches": 1,
+      "trace_gpu_kernel_events_complete": false,
+      "trace_kernel_duration_sum_us": 0,
+      "kernel_histogram_source": "incomplete graph replay GPU trace",
+      "event_ms_median": 19.040739059448242,
+      "wall_ms_median": 19.084038212895393,
+      "baseline_logits_max_abs": 0.0,
+      "baseline_logits_bit_exact": true,
+      "sequential_logits_max_abs": 0.0,
+      "checks": {
+        "finite_logits": true,
+        "baseline_pages": true,
+        "baseline_scales": true,
+        "baseline_argmax": true,
+        "sequential_pages": true,
+        "sequential_scales": true,
+        "sequential_argmax": true,
+        "causal_future_token": true,
+        "rollback0_logits": true,
+        "rollback0_pages": true,
+        "rollback0_scales": true,
+        "rollback8_logits": true,
+        "rollback8_pages": true,
+        "rollback8_scales": true
+      }
+    },
+    "context129_M1": {
+      "context": 129,
+      "rows": 1,
+      "all_kernel_launches": 482,
+      "trace_gpu_kernel_events": 482,
+      "kernel_count_source": "GPU trace",
+      "cpu_launch_api_calls": 482,
+      "cpu_launch_api_histogram": {
+        "hipLaunchKernel": 480,
+        "hipExtModuleLaunchKernel": 2
+      },
+      "gpu_memcpy_events": 0,
+      "kernel_duration_sum_us": 16640.14800000001,
+      "kernel_histogram": {
+        "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<long>, std::array<char*, 1ul> >(int, at::native::FillFunctor<long>, std::array<char*, 1ul>)": 1,
+        "(anonymous namespace)::metadata_kernel(long const*, long*, int*, int*, int*, int*, int*, int*, int, int, int)": 1,
+        "void at::native::(anonymous namespace)::indexSelectSmallIndex<c10::Half, long, unsigned int, 2, 2, -2>(at::cuda::detail::TensorInfo<c10::Half, unsigned int>, at::cuda::detail::TensorInfo<c10::Half const, unsigned int>, at::cuda::detail::TensorInfo<long const, unsigned int>, int, int, unsigned int, long)": 1,
+        "void at::native::elementwise_kernel_manual_unroll<128, 4, at::native::gpu_kernel_impl<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#7}::operator()() const::{lambda(float)#1}>(at::TensorIteratorBase&, at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#7}::operator()() const::{lambda(float)#1} const&)::{lambda(int, bool)#1}>(int, at::native::gpu_kernel_impl<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#7}::operator()() const::{lambda(float)#1}>(at::TensorIteratorBase&, at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#7}::operator()() const::{lambda(float)#1} const&)::{lambda(int, bool)#1})": 1,
+        "Cijk_Alik_Bljk_S_B_Bias_HA_S_SAV_UserArgs_MT16x16x16_SN_LDSB0_AFC1_AFEM1_AFEM1_ASEM1_CLR0_CADS0_DTLA0_DTLB0_DTVA0_DTVB0_EPS1_FDSI0_GRPM1_GRVWA1_GRVWB1_GSUAMB_GLS0_ISA1201_IU1_K1_LDSTI0_LBSPPA0_LBSPPB0_LBSPPM0_LPA0_LPB0_LPM0_LRVW1_LWPMn1_MIAV0_MO40_NTn1_NTA0_NTB0_NTC0_NTD0_NTM0_NEPBS0_NLCA1_NLCB1_ONLL1_PGR1_PLR0_PKA0_SIA1_SS0_SPO0_SRVW0_SSO0_SVW1_SK0_SKFTR0_SKXCCM0_TT2_2_TLDS0_ULSGRO0_USL1_UIOFGRO0_USFGROn1_VSn1_VWA1_VWB1_WSGRA0_WSGRB0_WS64_WG8_8_1": 1,
+        "void at::native::(anonymous namespace)::CatArrayBatchedCopy_contig<at::native::(anonymous namespace)::OpaqueType<4u>, unsigned int, 3, 128, 1>(at::native::(anonymous namespace)::OpaqueType<4u>*, at::native::(anonymous namespace)::CatArrInputTensorMetadata<at::native::(anonymous namespace)::OpaqueType<4u>, unsigned int, 128, 1>, at::native::(anonymous namespace)::TensorSizeStride<unsigned int, 4u>, int, unsigned int)": 1,
+        "void at::native::vectorized_elementwise_kernel<4, at::native::cos_kernel_cuda(at::TensorIteratorBase&)::{lambda()#2}::operator()() const::{lambda()#2}::operator()() const::{lambda(float)#1}, std::array<char*, 2ul> >(int, at::native::cos_kernel_cuda(at::TensorIteratorBase&)::{lambda()#2}::operator()() const::{lambda()#2}::operator()() const::{lambda(float)#1}, std::array<char*, 2ul>)": 1,
+        "void at::native::vectorized_elementwise_kernel<4, at::native::AUnaryFunctor<float, float, float, at::native::binary_internal::MulFunctor<float> >, std::array<char*, 2ul> >(int, at::native::AUnaryFunctor<float, float, float, at::native::binary_internal::MulFunctor<float> >, std::array<char*, 2ul>)": 2,
+        "void at::native::vectorized_elementwise_kernel<4, at::native::sin_kernel_cuda(at::TensorIteratorBase&)::{lambda()#2}::operator()() const::{lambda()#2}::operator()() const::{lambda(float)#1}, std::array<char*, 2ul> >(int, at::native::sin_kernel_cuda(at::TensorIteratorBase&)::{lambda()#2}::operator()() const::{lambda()#2}::operator()() const::{lambda(float)#1}, std::array<char*, 2ul>)": 1,
+        "void at::native::vectorized_elementwise_kernel<4, at::native::float16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul> >(int, at::native::float16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul>)": 2,
+        "void (anonymous namespace)::rms_norm_quant_i4_rows_kernel<true, false>(__half const*, __half const*, __half*, unsigned char*, __half*, int, int, float, float, float)": 72,
+        "void (anonymous namespace)::bpre_multi_scale_kernel<1u>(unsigned char const*, unsigned char const*, unsigned char const*, unsigned char const*, __half const*, __half const*, __half const*, __half const*, __half*, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, bool)": 72,
+        "(anonymous namespace)::chunk_q_norm_rope_h128_kernel(__half const*, __half const*, __half const*, __half const*, __half*, (anonymous namespace)::Strides4, int, int, int, float)": 36,
+        "(anonymous namespace)::chunk_k_norm_rope_append_kernel(__half const*, __half const*, __half const*, __half const*, __half const*, unsigned char*, __half2*, int const*, int const*, int const*, (anonymous namespace)::Strides4, (anonymous namespace)::Strides4, int, int, int, int, int, float)": 36,
+        "void flashinfer::BatchDecodeWithPagedKVCacheKernel<(flashinfer::RotaryMode)0, false, 16ul, 8ul, 16ul, 2ul, __half, flashinfer::quant::__precision__s4, __half, int>(__half*, flashinfer::paged_kv_t<flashinfer::quant::__precision__s4, int>, __half*, unsigned long, float, float, float)": 36,
+        "(anonymous namespace)::fused_attention_hadamard_quant_kernel(__half const*, unsigned char*, __half*, int, int, int)": 36,
+        "void (anonymous namespace)::bpre_grouped_scale_kernel<1u, 4u>(unsigned char const*, unsigned char const*, __half const*, __half const*, __half*, unsigned int, unsigned int, unsigned int, unsigned int)": 72,
+        "void at::native::vectorized_elementwise_kernel<8, at::native::CUDAFunctor_add<c10::Half>, std::array<char*, 3ul> >(int, at::native::CUDAFunctor_add<c10::Half>, std::array<char*, 3ul>)": 72,
+        "(anonymous namespace)::fused_ffn_silu_hadamard_quant_single_fp16lds_kernel(__half const*, __half const*, __half const*, unsigned char*, __half*, int, int, int, int)": 36,
+        "(anonymous namespace)::rms_norm_rows_kernel(__half const*, __half*, int, int, float, float)": 1,
+        "Cijk_Alik_Bljk_HHS_BH_Bias_HA_S_SAV_UserArgs_MT128x128x32_MI16x16x1_SN_LDSB0_AFC1_AFEM1_AFEM1_ASEM1_CLR0_CADS0_DTLA0_DTLB0_DTVA0_DTVB1_EPS0_FDSI0_GRPM1_GRVWA4_GRVWB8_GSUAMB_GLS0_ISA1201_IU1_K1_LDSTI0_LBSPPA128_LBSPPB0_LBSPPM0_LPA16_LPB0_LPM0_LRVW8_LWPMn1_MIAV1_MIWT4_4_MO40_NTn1_NTA0_NTB0_NTC0_NTD0_NTM0_NEPBS0_NLCA1_NLCB2_ONLL1_PGR2_PLR1_PKA0_SIA3_SS0_SPO0_SRVW0_SSO0_SVW8_SK0_SKFTR0_SKXCCM0_TLDS1_ULSGRO0_USL1_UIOFGRO0_USFGROn1_VSn1_VWA1_VWB1_WSGRA0_WSGRB0_WS32_WG32_4_1": 1
+      },
+      "event_ms": [
+        18.87377166748047,
+        18.799762725830078,
+        17.88204574584961,
+        17.853696823120117,
+        17.883285522460938,
+        17.908363342285156
+      ],
+      "wall_ms": [
+        19.093049690127373,
+        18.872080370783806,
+        17.914709635078907,
+        17.886697314679623,
+        17.926675267517567,
+        17.95307733118534
+      ],
+      "verification_graph_captures": [
+        {
+          "rows": 15,
+          "capture_ms": 98.39238319545984,
+          "node_metadata": {
+            "source": "HIP graph node enumeration, recursively including child graphs",
+            "node_types": {
+              "kernel": 553
+            },
+            "kernel_nodes": 553,
+            "total_nodes_including_child_containers": 553
+          }
+        },
+        {
+          "rows": 16,
+          "capture_ms": 53.43505088239908,
+          "node_metadata": {
+            "source": "HIP graph node enumeration, recursively including child graphs",
+            "node_types": {
+              "kernel": 553
+            },
+            "kernel_nodes": 553,
+            "total_nodes_including_child_containers": 553
+          }
+        }
+      ],
+      "event_ms_median": 17.895824432373047,
+      "wall_ms_median": 17.939876299351454,
+      "baseline_logits_max_abs": 0.0,
+      "baseline_logits_bit_exact": true,
+      "sequential_logits_max_abs": 0.0,
+      "checks": {
+        "finite_logits": true,
+        "baseline_pages": true,
+        "baseline_scales": true,
+        "baseline_argmax": true,
+        "sequential_pages": true,
+        "sequential_scales": true,
+        "sequential_argmax": true,
+        "rollback0_logits": true,
+        "rollback0_pages": true,
+        "rollback0_scales": true
+      }
+    },
+    "context129_M15": {
+      "context": 129,
+      "rows": 15,
+      "all_kernel_launches": 554,
+      "trace_gpu_kernel_events": 0,
+      "kernel_count_source": "HIP graph kernel nodes + external kernel launch APIs",
+      "cpu_launch_api_calls": 2,
+      "cpu_launch_api_histogram": {
+        "hipLaunchKernel": 1,
+        "hipGraphLaunch": 1
+      },
+      "gpu_memcpy_events": 0,
+      "kernel_duration_sum_us": null,
+      "kernel_histogram": {},
+      "event_ms": [
+        18.96891975402832,
+        19.00351905822754,
+        19.016477584838867,
+        18.993919372558594,
+        19.001680374145508,
+        18.97835922241211
+      ],
+      "wall_ms": [
+        19.032718613743782,
+        19.03441548347473,
+        19.06383130699396,
+        19.04058549553156,
+        19.04679834842682,
+        19.01079248636961
+      ],
+      "verification_graph_captures": [
+        {
+          "rows": 15,
+          "capture_ms": 98.39238319545984,
+          "node_metadata": {
+            "source": "HIP graph node enumeration, recursively including child graphs",
+            "node_types": {
+              "kernel": 553
+            },
+            "kernel_nodes": 553,
+            "total_nodes_including_child_containers": 553
+          }
+        },
+        {
+          "rows": 16,
+          "capture_ms": 53.43505088239908,
+          "node_metadata": {
+            "source": "HIP graph node enumeration, recursively including child graphs",
+            "node_types": {
+              "kernel": 553
+            },
+            "kernel_nodes": 553,
+            "total_nodes_including_child_containers": 553
+          }
+        }
+      ],
+      "actual_graph_kernel_nodes": 553,
+      "external_kernel_launches": 1,
+      "trace_gpu_kernel_events_complete": false,
+      "trace_kernel_duration_sum_us": 0,
+      "kernel_histogram_source": "incomplete graph replay GPU trace",
+      "event_ms_median": 18.99779987335205,
+      "wall_ms_median": 19.037500489503145,
+      "baseline_logits_max_abs": 0.0,
+      "baseline_logits_bit_exact": true,
+      "sequential_logits_max_abs": 0.0,
+      "checks": {
+        "finite_logits": true,
+        "baseline_pages": true,
+        "baseline_scales": true,
+        "baseline_argmax": true,
+        "sequential_pages": true,
+        "sequential_scales": true,
+        "sequential_argmax": true,
+        "causal_future_token": true,
+        "rollback0_logits": true,
+        "rollback0_pages": true,
+        "rollback0_scales": true,
+        "rollback7_logits": true,
+        "rollback7_pages": true,
+        "rollback7_scales": true
+      }
+    },
+    "context129_M16": {
+      "context": 129,
+      "rows": 16,
+      "all_kernel_launches": 554,
+      "trace_gpu_kernel_events": 0,
+      "kernel_count_source": "HIP graph kernel nodes + external kernel launch APIs",
+      "cpu_launch_api_calls": 2,
+      "cpu_launch_api_histogram": {
+        "hipLaunchKernel": 1,
+        "hipGraphLaunch": 1
+      },
+      "gpu_memcpy_events": 0,
+      "kernel_duration_sum_us": null,
+      "kernel_histogram": {},
+      "event_ms": [
+        19.059358596801758,
+        19.095596313476562,
+        19.03156089782715,
+        19.07463836669922,
+        19.02239990234375,
+        19.031715393066406
+      ],
+      "wall_ms": [
+        19.11280397325754,
+        19.127233885228634,
+        19.078955985605717,
+        19.132043235003948,
+        19.069012254476547,
+        19.08237673342228
+      ],
+      "verification_graph_captures": [
+        {
+          "rows": 15,
+          "capture_ms": 98.39238319545984,
+          "node_metadata": {
+            "source": "HIP graph node enumeration, recursively including child graphs",
+            "node_types": {
+              "kernel": 553
+            },
+            "kernel_nodes": 553,
+            "total_nodes_including_child_containers": 553
+          }
+        },
+        {
+          "rows": 16,
+          "capture_ms": 53.43505088239908,
+          "node_metadata": {
+            "source": "HIP graph node enumeration, recursively including child graphs",
+            "node_types": {
+              "kernel": 553
+            },
+            "kernel_nodes": 553,
+            "total_nodes_including_child_containers": 553
+          }
+        }
+      ],
+      "actual_graph_kernel_nodes": 553,
+      "external_kernel_launches": 1,
+      "trace_gpu_kernel_events_complete": false,
+      "trace_kernel_duration_sum_us": 0,
+      "kernel_histogram_source": "incomplete graph replay GPU trace",
+      "event_ms_median": 19.045536994934082,
+      "wall_ms_median": 19.09759035333991,
+      "baseline_logits_max_abs": 0.0,
+      "baseline_logits_bit_exact": true,
+      "sequential_logits_max_abs": 0.0,
+      "checks": {
+        "finite_logits": true,
+        "baseline_pages": true,
+        "baseline_scales": true,
+        "baseline_argmax": true,
+        "sequential_pages": true,
+        "sequential_scales": true,
+        "sequential_argmax": true,
+        "causal_future_token": true,
+        "rollback0_logits": true,
+        "rollback0_pages": true,
+        "rollback0_scales": true,
+        "rollback8_logits": true,
+        "rollback8_pages": true,
+        "rollback8_scales": true
+      }
+    }
+  },
+  "standards": {
+    "cache": "bit-exact packed KV and FP16 scale/zero",
+    "causal": "unchanged earlier-row logits when future input changes",
+    "tokens": "exact argmax and end-to-end generated token parity",
+    "logits": "record max error; no new relaxed tolerance is introduced"
+  },
+  "passed": true
+}

@@ -8,6 +8,13 @@ torch::Tensor rms_norm_rows(
 std::vector<torch::Tensor> rms_norm_quant_i4_rows(
     torch::Tensor input, int64_t mean_dim, double eps);
 
+std::vector<torch::Tensor> rms_norm_quant_i4_rows_clipped(
+    torch::Tensor input, int64_t mean_dim, double eps, double clip_ratio);
+
+std::vector<torch::Tensor> residual_rms_norm_quant_i4_rows(
+    torch::Tensor input, torch::Tensor residual, int64_t mean_dim,
+    double eps, double clip_ratio);
+
 void fused_append_kv_i4(
     torch::Tensor kv_data, torch::Tensor kv_param, torch::Tensor kv_indptr,
     torch::Tensor kv_indices, torch::Tensor last_page_offset, torch::Tensor key,

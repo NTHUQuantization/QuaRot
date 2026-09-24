@@ -217,6 +217,10 @@ def capture_runtime_provenance(runtime, args, expected_hip_sha256=None):
             "exact_small_chunk_effective": runtime.exact_small_chunk,
             "exact_small_chunk_requested": args.exact_small_chunk,
             "fused_norm_quant": runtime.fused_norm_quant,
+            "verification_optimization_env": {
+                key: os.getenv(key) for key in (
+                    "QUAROT_BATCHED_H128", "QUAROT_STATIC_KV_METADATA",
+                    "QUAROT_VERIFICATION_GRAPH", "QUAROT_CHUNK_PREPROCESS")},
             "adaptive_k": runtime.adaptive_k,
             "quarot_fused_k1_env": fused_k1_env,
             "cache_fused_k1_effective": (
@@ -756,6 +760,10 @@ def main(argv=None):
         runtime.generate(tokenize(runtime.tokenizer, text), min(args.generated_tokens, 32))
         gc.collect(); torch.cuda.empty_cache()
     memory_snapshots.append(cuda_memory_snapshot("warmups_complete"))
+    graph_captures_after_warmup = [
+        {"rows": key[1], "capture_ms": graph.capture_ms,
+         "node_metadata": graph.node_metadata}
+        for key, graph in getattr(runtime, "_verification_graphs", {}).items()]
 
     runs = []
     order = list(range(len(prompts)))
@@ -820,6 +828,11 @@ def main(argv=None):
             "td_basis_fold": args.td_basis_fold,
             "fused_norm_quant": args.fused_norm_quant},
         "gpu_preflight": gpu,
+        "verification_graph_captures_after_warmup": graph_captures_after_warmup,
+        "verification_graph_captures_at_end": [
+            {"rows": key[1], "capture_ms": graph.capture_ms,
+             "node_metadata": graph.node_metadata}
+            for key, graph in getattr(runtime, "_verification_graphs", {}).items()],
         "memory_snapshots": memory_snapshots,
         "runs": runs,
         "median_steady_tokens_per_s": statistics.median(

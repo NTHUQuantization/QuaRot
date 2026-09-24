@@ -227,6 +227,11 @@ class _ToyDecoderLayer(torch.nn.Module):
         super().__init__()
         self.input_layernorm = _ToyNorm()
         self.post_attention_layernorm = _ToyNorm()
+        self.self_attn = torch.nn.Module()
+        self.mlp = torch.nn.Module()
+        from quarot.nn import Quantizer
+        self.self_attn.quantizer = Quantizer(0.9)
+        self.mlp.quantizer = Quantizer(1.0)
 
 
 class _ToyRuntimeTarget(torch.nn.Module):
@@ -301,6 +306,9 @@ def test_fused_norm_quant_wraps_72_layer_norms_but_not_final_norm():
     assert len(layer_norms) == 72
     assert all(isinstance(norm, _RowIndependentRMSNormQuant)
                for norm in layer_norms)
+    assert all(layer.input_layernorm.input_clip_ratio == 0.9
+               and layer.post_attention_layernorm.input_clip_ratio == 1.0
+               for layer in runtime.target.model.layers)
 
 
 def test_packed_quantizer_passthrough_and_logical_shape():
@@ -430,8 +438,10 @@ def test_k1_is_disabled_for_transactions_masks_and_expanded_oracle():
     assert not disabled.can_fuse_k1(0, None)
 
 
-def test_graph_metadata_and_transactions_are_mutually_exclusive(monkeypatch):
+@pytest.mark.parametrize("static_metadata", ["0", "1"])
+def test_graph_metadata_and_transactions_are_mutually_exclusive(monkeypatch, static_metadata):
     monkeypatch.delenv("QUAROT_PERSISTENT_KV_METADATA", raising=False)
+    monkeypatch.setenv("QUAROT_STATIC_KV_METADATA", static_metadata)
     cache = _cpu_paged_cache(max_length=128)
     cache.length = 5
     cache.enable_cuda_graph_decode()
