@@ -1,6 +1,8 @@
 import pytest
 import torch
 
+from e2e.speculative import (
+    _inverse_hadamard_cuda, _normalized_hadamard_cpu)
 from quarot.transformers.kv_cache import (
     MultiLayerPagedKVCache4Bit, matmul_had_HIP)
 
@@ -24,6 +26,21 @@ def test_batched_kv_hadamard_matches_independent_rows():
         for index in range(values.shape[1])
     ], dim=1)
     assert torch.equal(batched, independent)
+
+
+def test_qwen3_32b_generalized_inverse_hadamard_matches_cpu_oracle():
+    torch.manual_seed(19)
+    width = 5120
+    # Nine rows exercises the gfx1201 eight-row dispatch boundary.
+    source = torch.randn(9, width)
+    signs = torch.tensor(
+        [1, -1] * (width // 2), dtype=torch.float32)
+    rotated = _normalized_hadamard_cpu(source * signs)
+    restored = _inverse_hadamard_cuda(
+        rotated.to(device="cuda", dtype=torch.float16))
+    actual = restored.float().cpu() * signs
+    torch.testing.assert_close(
+        actual, source, atol=2e-2, rtol=2e-2)
 
 
 def test_fused_chunk_writer_matches_sequential_slots():

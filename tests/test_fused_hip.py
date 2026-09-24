@@ -84,7 +84,7 @@ def test_fused_attention_matches_quarot_layout(batch, seq, heads, head_dim):
 
 
 @pytest.mark.parametrize("rows,width", [
-    (1, 11008), (4, 14336), (2, 28672), (1, 29696),
+    (1, 11008), (4, 14336), (1, 25600), (2, 28672), (1, 29696),
 ])
 def test_grouped256_ffn_matches_per_group_scale_contract(rows, width):
     torch.manual_seed(width - rows)
@@ -165,12 +165,15 @@ def test_grouped_scale_bpre_matches_bpre_dequant_oracle(rows):
     torch.testing.assert_close(actual, expected, rtol=2e-3, atol=1e-2)
 
 
-@pytest.mark.parametrize("outputs", [(64, 32), (64, 32, 32)])
-def test_multi_scale_bpre_matches_independent_projections(outputs):
+@pytest.mark.parametrize("outputs,k,m", [
+    ((64, 32), 256, 3),
+    ((64, 32, 32), 256, 3),
+    ((8192, 1024, 1024), 5120, 1),
+])
+def test_multi_scale_bpre_matches_independent_projections(outputs, k, m):
     from quarot.functional import pack_i4
 
     torch.manual_seed(19)
-    m, k = 3, 256
     a_i4 = torch.randint(-8, 8, (m, k), device="cuda", dtype=torch.int8)
     packed_a = pack_i4(a_i4).contiguous()
     activation_scale = torch.rand(m, 1, device="cuda", dtype=torch.float16)

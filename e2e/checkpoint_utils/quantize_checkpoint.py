@@ -1,5 +1,6 @@
 """Convert dense Llama 2/3.1, CodeLlama, Qwen2.5, or Qwen3 to QuaRot INT4."""
 import argparse
+import hashlib
 import json
 import shutil
 import sys
@@ -24,6 +25,46 @@ FAMILIES = {
               "QuarotQwen3ForCausalLM", "qwen3_quarot"),
 }
 
+
+def _sha256(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _source_identity(model):
+    """Record stable Hub provenance without relying on an absolute path."""
+    text = str(model)
+    parts = Path(text).parts
+    model_id = None
+    revision = None
+    for index, part in enumerate(parts):
+        if part.startswith("models--"):
+            components = part.removeprefix("models--").split("--")
+            if len(components) >= 2:
+                model_id = "/".join(components)
+        if part == "snapshots" and index + 1 < len(parts):
+            revision = parts[index + 1]
+    if model_id is None and not Path(text).is_absolute() and text.count("/") == 1:
+        model_id = text
+
+    result = {}
+    if model_id:
+        result["quarot_source_model_id"] = model_id
+    if revision:
+        result["quarot_source_revision"] = revision
+    source = Path(text)
+    config_path = source / "config.json"
+    if config_path.is_file():
+        result["quarot_source_config_sha256"] = _sha256(config_path)
+    index_path = source / "model.safetensors.index.json"
+    if index_path.is_file():
+        result["quarot_source_index_sha256"] = _sha256(index_path)
+    return result
+
+
 def runtime_types(model_type):
     if model_type not in FAMILIES:
         raise ValueError(f"unsupported dense model_type {model_type!r}")
@@ -42,19 +83,21 @@ def main(args):
         print(f"Streaming RtN: source={args.model}, output={args.output}, "
               f"rotation_device={args.rotation_device}, "
               f"rotation_dtype={args.rotation_dtype}", flush=True)
-        streaming_rtn.convert(args.model, args.output, config, args)
+        conversion_metadata = streaming_rtn.convert(
+            args.model, args.output, config, args)
     else:
         print(f"Streaming GPTQ: source={args.model}, output={args.output}, "
               f"rotation_device={args.rotation_device}, "
               f"rotation_dtype={args.rotation_dtype}", flush=True)
-        streaming_gptq.convert(args.model, args.output, config, args)
+        conversion_metadata = streaming_gptq.convert(
+            args.model, args.output, config, args)
 
     finalize_output(args.output, args.model, config_cls, runtime_cls,
-                    output_type, runtime_module)
+                    output_type, runtime_module, conversion_metadata)
 
 
 def finalize_output(output_path, model, config_cls, runtime_cls, output_type,
-                    runtime_module):
+                    runtime_module, conversion_metadata=None):
     output = Path(output_path)
     runtime_config = config_cls.from_pretrained(
         model, attn_implementation="flash_attention_2")
@@ -71,6 +114,12 @@ def finalize_output(output_path, model, config_cls, runtime_cls, output_type,
     saved_config["quarot_ffn_format"] = QUAROT_FFN_FORMAT
     saved_config["quarot_activation_clip_ratio"] = (
         QUAROT_ACTIVATION_CLIP_RATIO)
+    saved_config.update(_source_identity(model))
+    if conversion_metadata is not None:
+        signature = conversion_metadata.get("streaming_signature")
+        if signature is not None:
+            saved_config["quarot_conversion"] = signature
+        saved_config.update(conversion_metadata.get("rotation_metadata", {}))
     config_path.write_text(json.dumps(saved_config, indent=2) + "\n")
     transformers.AutoTokenizer.from_pretrained(model).save_pretrained(output)
     source = Path(runtime_module.__file__)

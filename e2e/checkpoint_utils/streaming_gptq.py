@@ -34,6 +34,10 @@ _GROUPS = (
     ("mlp.up_proj", "mlp.gate_proj"),
     ("mlp.down_proj",),
 )
+_PRESERVED_LAYER_SUFFIXES = (
+    "self_attn.q_norm.weight",
+    "self_attn.k_norm.weight",
+)
 
 
 def _apply_hadamard(x, had_rem_dim, rem_dim):
@@ -135,7 +139,15 @@ def _quantize_layer(layer, inps, outs, position_ids, position_embeddings,
     return quantizers
 
 
-def _pack_layer(layer, prefix, quantizers):
+def _preserved_layer_tensors(tensors, prefix):
+    return {
+        prefix + suffix: tensors[prefix + suffix]
+        for suffix in _PRESERVED_LAYER_SUFFIXES
+        if prefix + suffix in tensors
+    }
+
+
+def _pack_layer(layer, prefix, quantizers, preserved_tensors=None):
     output = {}
     state = layer.state_dict()
     for key, value in state.items():
@@ -152,6 +164,8 @@ def _pack_layer(layer, prefix, quantizers):
             output[mapped[:-len("weight")] + "weight_scales"] = scale.cpu()
         else:
             output[stream._remap(full_key)] = value.cpu()
+    for full_key, value in (preserved_tensors or {}).items():
+        output[stream._remap(full_key)] = value.cpu()
     return output
 
 
@@ -199,8 +213,10 @@ def convert(model, output, config, args):
     rotation_device = device if args.rotation_device == "cuda" else torch.device("cpu")
     compute_dtype = {"float32": torch.float32,
                      "float64": torch.float64}[args.rotation_dtype]
-    q = stream._seeded_rotation_matrix(
+    q, rotation_signs = stream._seeded_rotation(
         config, args, rotation_device, compute_dtype)
+    rotation_metadata = stream._rotation_checkpoint_metadata(
+        source, config, rotation_signs, args)
     signature_data = {
         "version": _VERSION, "method": "gptq", "model": str(model),
         "seed": args.seed, "rotation_device": args.rotation_device,
@@ -245,6 +261,7 @@ def convert(model, output, config, args):
         stream._rotate_layer(
             tensors, prefix, config, q, rotation_device, compute_dtype,
             remove_norms=False)
+        preserved_tensors = _preserved_layer_tensors(tensors, prefix)
         layer = _layer_from_tensors(config, index, tensors, prefix)
         del tensors
         if stream._valid_shard(shard, signature, prefix):
@@ -261,11 +278,13 @@ def convert(model, output, config, args):
             quantizers = _quantize_layer(
                 layer, inps, outs, position_ids, position_embeddings,
                 cache_position, args)
-            packed = _pack_layer(layer.cpu(), prefix, quantizers)
+            packed = _pack_layer(
+                layer.cpu(), prefix, quantizers, preserved_tensors)
             stream._atomic_save(
                 packed, shard,
                 {"format": "pt", "quarot_signature": signature})
             del packed, quantizers
+        del preserved_tensors
         inps, outs = outs, inps
         del layer
         gc.collect()
@@ -281,4 +300,7 @@ def convert(model, output, config, args):
     temporary = index_path.with_suffix(index_path.suffix + ".tmp")
     temporary.write_text(json.dumps(index, indent=2, sort_keys=True) + "\n")
     os.replace(temporary, index_path)
-    return signature_data
+    return {
+        "streaming_signature": signature_data,
+        "rotation_metadata": rotation_metadata,
+    }

@@ -1,0 +1,362 @@
+{
+  "schema_version": 1,
+  "plan_id": "qwen3-32b-pard2-td-v1",
+  "created_at": "2026-08-28",
+  "status": "planned",
+  "objective": "Build and qualify a Qwen3-32B-aligned PARD-2 target-dependent checkpoint without changing the QuaRot or PARD-2 inference architecture.",
+  "immutable_baselines": {
+    "target_checkpoint": "/workspace_root/qwen3_32b_fused_v1_gptq_w4a4kv4_v1",
+    "target_manifest_sha256": "fd68b66a4142d451b9e633427060d906c6fa1e6b4f2488acc6d41c62e61cf0d0",
+    "target_source_revision": "9216db5781bf21249d130ec9da846c4624c16137",
+    "initial_draft_checkpoint": "/workspace_root/.hf_cache/pard/models--amd--PARD2-Qwen3-14B/snapshots/679eff0b65ffaf5abd2dadd21a17909562935798",
+    "initial_draft_revision": "679eff0b65ffaf5abd2dadd21a17909562935798",
+    "hip_binary": "/workspace_root/fused_v1/qwen3_32b_results/kernel/quarot_HIP_gfx1201_g4_m2.so",
+    "hip_sha256": "8e544408498612b2eae27b6fce9a52e939bded735eba77772692f6aa5fe5cfc5",
+    "runtime": {
+      "fused_k1": false,
+      "grouped_nwaves": 4,
+      "multi_nwaves": 2,
+      "compile_mode": "eager",
+      "target_weight_bits": 4,
+      "target_activation_bits": 4,
+      "target_kv_bits": 4
+    },
+    "formal_ti": {
+      "humaneval": {
+        "paired_speedup": 1.5185,
+        "mean_accept_length": 6.7569
+      },
+      "gsm8k": {
+        "paired_speedup": 1.4448,
+        "mean_accept_length": 6.2799
+      },
+      "math_500": {
+        "paired_speedup": 1.4505,
+        "mean_accept_length": 6.9778
+      },
+      "peak_vram_mib": 28619
+    },
+    "rejected_proxy": {
+      "profile": "PARD2-Qwen3-14B-on-Qwen3-32B",
+      "accepted_tokens_per_dataset": "0/480",
+      "mean_accept_length": 1.0,
+      "decision": "do_not_repeat_without_a_32b_alignment_change"
+    }
+  },
+  "invariants": {
+    "draft_backbone": "Qwen3-0.6B/PARD-2, 28 layers, hidden size 1024",
+    "target_hidden_size": 5120,
+    "target_feature_count": 4,
+    "projection_shape": [1024, 20480],
+    "projection_scale": 0.02,
+    "training_draft_length": 16,
+    "vocab_size": 151936,
+    "architecture_changes_allowed": false,
+    "kernel_dimension_changes_in_scope": false
+  },
+  "resource_contract": {
+    "gpu": "AMD R9700 32GB",
+    "sequential_gpu_jobs_only": true,
+    "vram_hard_gate_percent": 95.0,
+    "hotspot_hard_gate_c": 110,
+    "memory_temperature_hard_gate_c": 108,
+    "require_external_and_torch_memory_peaks": true,
+    "disk_free_observed_gib": 77,
+    "minimum_disk_reserve_gib": 25,
+    "maximum_derived_shard_gib": 10,
+    "maximum_feature_tokens_per_bf16_shard": 100000,
+    "maximum_ungated_gpu_hours": 12,
+    "forbidden": [
+      "load the full BF16 Qwen3-32B teacher on the R9700",
+      "load the teacher and trainable drafter concurrently on the R9700",
+      "start a larger data tier before its parent gate passes",
+      "change target quantization, kernel dimensions, K1, taps and trainable scope in one experiment"
+    ]
+  },
+  "data_contract": {
+    "formal_split_is_read_only": true,
+    "formal_dataset_hashes": {
+      "humaneval": "e16580cc87cac3168e59bde4ec1d0cd5cec7f31e1506c8ee1eba2ff914cf4368",
+      "gsm8k": "56767ac321f1e80e3721f390c743a6a7253d4d5f50bd791339010ffcd8620371",
+      "math_500": "4d8a669d746329ede429b1f4b037138ada9ae39ead6d0c34e1aa1be5349365a5"
+    },
+    "required_splits": [
+      "train",
+      "calibration_tune",
+      "heldout_validation",
+      "formal_benchmark"
+    ],
+    "required_manifest_fields": [
+      "source",
+      "source_revision",
+      "license",
+      "sample_ids",
+      "prompt_sha256",
+      "token_ids_sha256",
+      "token_count",
+      "split",
+      "seed"
+    ],
+    "formal_overlap_allowed": false,
+    "existing_collector_policy": "e2e/pard2_collect_features.py must not be used for TD32 training or model selection because its tune prompts overlap the formal benchmark and its metadata is fixed to the 8B profile.",
+    "teacher": "deployed GPTQ W4A4KV4 Qwen3-32B",
+    "feature_cache_format": "atomic, checksummed, resumable shards",
+    "full_teacher_logits_may_be_cached": false
+  },
+  "measurement_contract": {
+    "primary_metrics": [
+      "paired end-to-end tokens/s",
+      "paired steady tokens/s",
+      "mean accept length",
+      "draft acceptance",
+      "conditional acceptance",
+      "accepted/proposed tokens",
+      "exact AR output-token parity",
+      "external VRAM peak",
+      "torch max allocated/reserved"
+    ],
+    "diagnostic_metrics": [
+      "raw and projected feature RMSE",
+      "raw and projected feature cosine similarity",
+      "training and validation CE/KD/CAT losses",
+      "teacher feature extraction tokens/s",
+      "cache bytes per token"
+    ],
+    "decision_metric": "paired end-to-end performance; steady throughput alone cannot pass a gate",
+    "formal_success": {
+      "exact_parity": "540/540",
+      "td_over_ar_speedup_ci_lower_bound": ">1.0",
+      "td_over_ti_paired_end_to_end": ">=1.03",
+      "run_speedup_cv_percent": "<5",
+      "all_resource_gates": "pass"
+    }
+  },
+  "experiments": [
+    {
+      "id": "TD32-S0-CONTRACT",
+      "parent": null,
+      "status": "next",
+      "hypothesis": "A leakage-free data and provenance contract can be established before any GPU work.",
+      "only_changed_variable": "none; preflight only",
+      "work": [
+        "create train, calibration_tune and heldout_validation manifests",
+        "prove zero prompt/token overlap with formal 80/80/20",
+        "capture dirty source file hashes and immutable model/kernel revisions",
+        "estimate token, host RAM and disk use before materializing a shard"
+      ],
+      "gpu_token_budget": 0,
+      "go_gate": [
+        "all required provenance fields are present",
+        "formal overlap count is zero",
+        "projected disk free after the next shard remains at least 25 GiB"
+      ],
+      "stop_gate": [
+        "missing source license or revision",
+        "any formal prompt/token overlap",
+        "unresolved artifact overwrite"
+      ]
+    },
+    {
+      "id": "TD32-S1-EXTRACTOR-PROBE",
+      "parent": "TD32-S0-CONTRACT",
+      "status": "blocked_by_parent",
+      "hypothesis": "The quantized 32B teacher can emit deterministic selected hidden states within the R9700 resource gates.",
+      "only_changed_variable": "feature extraction enabled",
+      "target_layers": "union of all tap-screen candidates",
+      "token_budget": 16000,
+      "trainable_scope": "none",
+      "estimated_gpu_hours": "0.5-2",
+      "estimated_temporary_storage_gib": "<=2",
+      "go_gate": [
+        "all selected features are finite and deterministic",
+        "each candidate concatenates to width 20480",
+        "VRAM and thermal gates pass",
+        "measured bytes/token and tokens/s produce a feasible S2 estimate"
+      ],
+      "stop_gate": [
+        "NaN or Inf",
+        "shape or token-hash mismatch",
+        "VRAM >=95%",
+        "OOM or ROCm fault"
+      ]
+    },
+    {
+      "id": "TD32-S2A-AFFINE-LEGACY",
+      "parent": "TD32-S1-EXTRACTOR-PROBE",
+      "status": "blocked_by_parent",
+      "hypothesis": "A streamed diagonal affine map can align 32B legacy taps to the 14B feature space enough to produce non-zero acceptance.",
+      "only_changed_variable": "32B target taps",
+      "target_layers": [-1, -8, -16, -24],
+      "reference_14b_layers": [-1, -8, -16, -24],
+      "token_budget": 128000,
+      "trainable_scope": "online sufficient statistics for per-channel affine only",
+      "estimated_gpu_hours": "2-6",
+      "estimated_temporary_storage_gib": "<=5",
+      "go_gate": [
+        "three heldout task strata each accept at least one draft token",
+        "aggregate mean accept length >=2.0",
+        "exact AR parity"
+      ]
+    },
+    {
+      "id": "TD32-S2B-AFFINE-RELATIVE",
+      "parent": "TD32-S1-EXTRACTOR-PROBE",
+      "status": "blocked_by_parent",
+      "hypothesis": "Depth-scaled 14B taps transfer better to the 64-layer target than fixed negative indices.",
+      "only_changed_variable": "32B target taps",
+      "target_layers": [-1, -13, -26, -38],
+      "reference_14b_layers": [-1, -8, -16, -24],
+      "token_budget": 128000,
+      "trainable_scope": "online sufficient statistics for per-channel affine only",
+      "estimated_gpu_hours": "2-6",
+      "estimated_temporary_storage_gib": "<=5",
+      "go_gate": [
+        "three heldout task strata each accept at least one draft token",
+        "aggregate mean accept length >=2.0",
+        "exact AR parity"
+      ]
+    },
+    {
+      "id": "TD32-S2C-AFFINE-QUARTILE",
+      "parent": "TD32-S1-EXTRACTOR-PROBE",
+      "status": "blocked_by_parent",
+      "hypothesis": "Evenly spaced 64-layer taps provide a stronger low/mid/high feature basis.",
+      "only_changed_variable": "32B target taps",
+      "target_layers": [-1, -16, -32, -48],
+      "reference_14b_layers": [-1, -8, -16, -24],
+      "token_budget": 128000,
+      "trainable_scope": "online sufficient statistics for per-channel affine only",
+      "estimated_gpu_hours": "2-6",
+      "estimated_temporary_storage_gib": "<=5",
+      "go_gate": [
+        "three heldout task strata each accept at least one draft token",
+        "aggregate mean accept length >=2.0",
+        "exact AR parity"
+      ]
+    },
+    {
+      "id": "TD32-S3-PROJECTION-MICRO",
+      "parent_selector": "best passing TD32-S2 candidate selected on heldout validation only",
+      "status": "blocked_by_parent",
+      "hypothesis": "Training only the 20,972,544-parameter 20480-to-1024 projection can recover useful 32B target alignment.",
+      "only_changed_variable": "projection weights become trainable",
+      "token_budget": "50000-128000",
+      "trainable_scope": "target_proj only; drafter frozen",
+      "loss": "official CAT-weighted CE+KD; exact vocabulary-chunked KD is allowed, top-k substitution is not silent",
+      "estimated_gpu_hours": "4-12",
+      "estimated_temporary_storage_gib": "<=10 per shard",
+      "go_gate": [
+        "validation loss is finite and improves from initialization",
+        "every heldout task stratum has mean accept length >=2.0",
+        "exact AR parity",
+        "paired E2E does not regress versus the selected affine parent"
+      ],
+      "stop_gate": [
+        "two task strata remain zero-accept",
+        "training loss is non-finite",
+        "parent acceptance is not improved after the fixed token budget"
+      ]
+    },
+    {
+      "id": "TD32-S4-PROJECTION-500K",
+      "parent": "TD32-S3-PROJECTION-MICRO",
+      "status": "blocked_by_parent",
+      "hypothesis": "More diverse data improves alignment without changing the drafter backbone.",
+      "only_changed_variable": "token budget",
+      "token_budget": 500000,
+      "trainable_scope": "target_proj only; drafter frozen",
+      "estimated_gpu_hours": "12-36",
+      "feature_shard_tokens": 100000,
+      "go_gate": [
+        "each heldout task reaches at least 90% of its paired TI mean acceptance",
+        "paired E2E is not below the selected S2/S3 parent",
+        "no heldout task regresses more than 2%"
+      ],
+      "stop_gate": [
+        "four-times-more data gives less than 5% relative acceptance improvement",
+        "feature cache cannot preserve the disk reserve"
+      ]
+    },
+    {
+      "id": "TD32-S5-PROJECTION-1M",
+      "parent": "TD32-S4-PROJECTION-500K",
+      "status": "blocked_by_parent",
+      "hypothesis": "Projection-only calibration can meet or exceed the existing TI acceptance baseline.",
+      "only_changed_variable": "token budget",
+      "token_budget": 1000000,
+      "trainable_scope": "target_proj only; drafter frozen",
+      "estimated_gpu_hours": "24-72",
+      "feature_shard_tokens": 100000,
+      "go_gate": [
+        "heldout mean acceptance is no lower than paired TI on every task",
+        "paired TD/TI E2E >=1.03",
+        "resource and parity gates pass"
+      ],
+      "stop_gate": [
+        "acceptance improves but paired E2E does not; profile overhead before any unfreeze",
+        "same-method scaling saturates"
+      ]
+    },
+    {
+      "id": "TD32-S6-TOP-LAYERS",
+      "parent": "TD32-S5-PROJECTION-1M",
+      "status": "blocked_by_parent",
+      "hypothesis": "If projection capacity saturates, limited drafter adaptation can close the remaining alignment gap.",
+      "only_changed_variable": "unfreeze the top four drafter layers",
+      "token_budget": 1000000,
+      "trainable_scope": "target_proj plus top four drafter layers",
+      "estimated_gpu_hours": "48-120",
+      "go_gate": [
+        "paired TD/TI E2E improves by at least 3% over S5",
+        "no task acceptance regresses more than 2%",
+        "training VRAM remains below 95%"
+      ],
+      "stop_gate": [
+        "no material improvement over projection-only",
+        "optimizer plus activations exceed the R9700 gate"
+      ]
+    },
+    {
+      "id": "TD32-S7-FULL-DRAFTER",
+      "parent": "TD32-S6-TOP-LAYERS",
+      "status": "requires_explicit_resource_review",
+      "hypothesis": "Full 0.8B drafter adaptation is necessary only after projection and partial-unfreeze capacity are disproved.",
+      "only_changed_variable": "unfreeze the complete drafter",
+      "token_budget": "2000000-5000000",
+      "trainable_scope": "full drafter plus target_proj",
+      "estimated_gpu_hours": "72-240",
+      "decision": "do not launch automatically on the R9700"
+    },
+    {
+      "id": "TD32-S8-CACHE-SMOKE",
+      "parent_selector": "first checkpoint that passes S5 or S6 heldout gates",
+      "status": "blocked_by_parent",
+      "hypothesis": "The selected aligned checkpoint remains lossless and safe at deployment cache sizes.",
+      "only_changed_variable": "cache length: 2048, 4096, 8192",
+      "evaluation": "one fixed heldout prompt per task, then 16/16/8 heldout prompts",
+      "go_gate": [
+        "exact AR parity for every run",
+        "external and torch VRAM gates pass",
+        "no OOM, ROCm fault, NaN or illegal shape",
+        "paired TD/TI E2E >=1.03"
+      ]
+    },
+    {
+      "id": "TD32-S9-FORMAL",
+      "parent": "TD32-S8-CACHE-SMOKE",
+      "status": "blocked_by_parent",
+      "hypothesis": "A frozen TD32 checkpoint provides statistically supported deployment benefit over AR and TI.",
+      "only_changed_variable": "evaluation sample size",
+      "evaluation": "HumanEval 80, GSM8K 80, MATH-500 20, three sweeps, 8192 cache",
+      "checkpoint_and_thresholds_frozen": true,
+      "go_gate": [
+        "540/540 exact AR output-token parity",
+        "TD/AR paired speedup bootstrap 95% CI lower bound >1 on every task",
+        "paired TD/TI E2E >=1.03",
+        "speedup CV <5%",
+        "95% VRAM and thermal gates pass"
+      ],
+      "decision": "only this stage may promote a checkpoint to canonical TD"
+    }
+  ]
+}

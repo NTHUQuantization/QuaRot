@@ -99,40 +99,40 @@ python e2e/benchmark_accuracy.py \
   --output /tmp/benchmark_accuracy_llama3_8b_gptq.json
 ```
 
-## PARD2 speculative decoding (Qwen3-8B)
+## Fused PARD2: Qwen3-8B / 14B / 32B
 
-This branch integrates official PARD2-TI/TD with the fused W4A4KV4 HIP target.
-The qualified configuration is batch 1, greedy decoding, normal EOS handling,
-`draft_k=15`, native GQA KV4, batched LM-head, and cached TD basis.
+This branch (`fused_pard2`) runs dense Qwen3 targets with fused W4A4KV4
+HIP kernels on AMD GPUs. The supported inference contract is batch 1,
+greedy decoding, thinking disabled, normal EOS handling, and `draft_k=15`.
+
+| Target | Profile | Canonical modes | Target checkpoint |
+|---|---|---|---|
+| Qwen3-8B | `qwen3_8b` | AR, PARD2-TI, PARD2-TD | RTN W4A4KV4 |
+| Qwen3-14B | `qwen3_14b` | AR, PARD2-TI, PARD2-TD | RTN W4A4KV4 |
+| Qwen3-32B | `qwen3_32b` | AR, PARD2-TI | GPTQ W4A4KV4; RTN baseline |
+
+TI uses the shared `amd/PARD2-Qwen3-8B` drafter for all three targets.
+TD uses the matching 8B or 14B drafter. The explicit 14B-on-32B TD proxy
+and its calibration/training tools are experimental, not a qualified 32B TD release.
+
+Start with the **[Qwen3 setup and execution guide](e2e/PARD2_QWEN3.md)**
+for pinned model revisions, checkpoint conversion, generation, benchmarking,
+and qualification. Always pass the target, tokenizer, and draft paths explicitly
+when selecting 14B or 32B; selecting a profile validates the model contract but
+does not download models or replace the legacy 8B path defaults.
 
 ### Documentation
 
-- [Integration tutorial (ZH)](e2e/PARD2_INTEGRATION_TUTORIAL_ZH.md): verifier, cache transactions, parity debugging, and the first qualified runtime.
-- [Optimization tutorial (ZH)](e2e/PARD2_OPTIMIZATION_TUTORIAL_ZH.md): batched LM-head, cached TD basis, memory/roofline analysis, and post-merge qualification.
-- [Merge conflict record (ZH)](e2e/FUSED_V1_MERGE_CONFLICTS_ZH.md): decisions made while merging `origin/fused_v1`, rejected fallbacks, and performance evidence.
-- [Post-merge result index](pard2_post_merge_results/README.md): benchmark contract, aggregate results, raw artifact names, and reproduction commands.
+- [Source and experiment index](e2e/PARD2_SOURCE_INDEX.md): runtime, conversion, tests, and experimental tooling.
+- [Integration tutorial (ZH)](e2e/PARD2_INTEGRATION_TUTORIAL_ZH.md): verifier, cache transactions, and parity debugging.
+- [Optimization tutorial (ZH)](e2e/PARD2_OPTIMIZATION_TUTORIAL_ZH.md): batched LM-head, cached TD basis, and memory analysis.
+- [32B experiment report (ZH)](e2e/QWEN3_32B_W4A4KV4_PARD2_REPORT_ZH.md): historical GPTQ, AR/TI qualification, and rejected TD proxy evidence.
+- [8B post-merge results](pard2_post_merge_results/README.md): historical qualification and reproduction commands.
 
-The older `PARD2_INTEGRATION_REPORT_ZH*.md` files are experiment journals;
-the two tutorials above are the canonical onboarding documents.
-
-### Qualified benchmark
-
-```bash
-python e2e/benchmark_pard2.py \
-  --mode pard2-td \
-  --dataset math_500 \
-  --generated-tokens 256 \
-  --warmups 8 \
-  --sweeps 3 \
-  --compile-mode max-autotune-no-cudagraphs \
-  --precompile-draft-shapes \
-  --output /tmp/pard2-td_math_500.json
-```
-
-Run AR, TI, and TD in separate processes. Then place the nine formal JSON
-files under the names expected by `e2e/qualify_pard2.py`. The checked-in
-qualification summary records exact parity, paired bootstrap confidence
-intervals, run-level CV, and VRAM headroom.
+Historical reports preserve the environment and measurements of their original
+runs. Their absolute paths, binary hashes, and local artifact references must be
+adapted to a new machine; model weights and new raw experiment outputs are not
+shipped in Git. See the setup guide for the current supported entry points.
 
 ## Star History
 

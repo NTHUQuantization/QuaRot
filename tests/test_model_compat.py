@@ -194,6 +194,38 @@ def test_benchmark_models_select_int4_fusions(
     assert layer.mlp._fused_ffn
 
 
+def test_qwen3_32b_exact_kernel_dimensions_are_specialized():
+    config = Qwen3Config(
+        vocab_size=151936, hidden_size=5120, intermediate_size=25600,
+        num_hidden_layers=1, num_attention_heads=64,
+        num_key_value_heads=8, head_dim=128,
+        max_position_embeddings=40960)
+    config._attn_implementation = "eager"
+    config.quarot_checkpoint_format_version = 2
+    config.quarot_ffn_format = GROUPED_FFN_FORMAT
+    with torch.device("meta"):
+        model = QuarotQwen3ForCausalLM(config)
+
+    layer = model.model.layers[0]
+    attention = layer.self_attn
+    mlp = layer.mlp
+    assert (attention.q_proj.in_features,
+            attention.q_proj.out_features) == (5120, 8192)
+    assert (attention.k_proj.in_features,
+            attention.k_proj.out_features) == (5120, 1024)
+    assert (attention.v_proj.in_features,
+            attention.v_proj.out_features) == (5120, 1024)
+    assert (attention.o_proj[1].in_features,
+            attention.o_proj[1].out_features) == (8192, 5120)
+    assert (mlp.gate_proj.in_features,
+            mlp.gate_proj.out_features) == (5120, 25600)
+    assert (mlp.down_proj.in_features,
+            mlp.down_proj.out_features) == (25600, 5120)
+    assert mlp.ffn_physical_size == 25600
+    assert "Qwen3-32B" in quarot._HIP.selected_bpre_kernel_name(5120)
+    assert "Qwen3-32B" in quarot._HIP.selected_bpre_kernel_name(25600)
+
+
 @pytest.mark.parametrize("width", [
     11008, 13824, 14336, 22016, 25600, 27648, 28672, 29568,
 ])

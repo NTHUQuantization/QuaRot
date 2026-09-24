@@ -8,7 +8,8 @@ from e2e.checkpoint_utils import quantize_checkpoint
 from e2e.checkpoint_utils import streaming_gptq
 from e2e.checkpoint_utils import streaming_rtn
 from e2e.checkpoint_utils import rotation_utils
-from quarot.functional.hadamard import matmul_grouped_h256
+from quarot.functional.hadamard import (
+    matmul_grouped_h256, matmul_hadU, random_hadamard_matrix)
 
 
 class _ToyLayer(torch.nn.Module):
@@ -21,6 +22,35 @@ class _ToyLayer(torch.nn.Module):
         with torch.no_grad():
             self.self_attn.o_proj.weight.copy_(torch.eye(4))
             self.mlp.down_proj.weight.copy_(torch.eye(256))
+
+
+class _ToyNormLayer(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.self_attn = torch.nn.Module()
+        self.self_attn.q_norm = torch.nn.LayerNorm(
+            4, elementwise_affine=True, dtype=torch.float16)
+        self.self_attn.k_norm = torch.nn.LayerNorm(
+            4, elementwise_affine=True, dtype=torch.float16)
+
+
+def test_pack_layer_preserves_source_norm_dtype_and_values():
+    prefix = "model.layers.0."
+    layer = _ToyNormLayer()
+    q_norm = torch.tensor(
+        [0.5, 0.75, 1.0, 1.25], dtype=torch.bfloat16)
+    k_norm = torch.tensor(
+        [0.625, 0.875, 1.125, 1.375], dtype=torch.bfloat16)
+    preserved = {
+        prefix + "self_attn.q_norm.weight": q_norm,
+        prefix + "self_attn.k_norm.weight": k_norm,
+    }
+    packed = streaming_gptq._pack_layer(
+        layer, prefix, quantizers={}, preserved_tensors=preserved)
+    assert packed[prefix + "self_attn.q_norm.weight"].dtype == torch.bfloat16
+    assert packed[prefix + "self_attn.k_norm.weight"].dtype == torch.bfloat16
+    assert torch.equal(packed[prefix + "self_attn.q_norm.weight"], q_norm)
+    assert torch.equal(packed[prefix + "self_attn.k_norm.weight"], k_norm)
 
 
 def test_calibration_layer_installs_runtime_hadamards_without_changing_keys(
@@ -174,6 +204,76 @@ def test_programmatic_resume_recreates_rotation_without_consuming_caller_rng(
     assert torch.equal(resumed, first)
 
 
+def test_seeded_generalized_rotation_retains_exact_random_signs():
+    config = SimpleNamespace(hidden_size=40)
+    args = SimpleNamespace(seed=913)
+    q, signs = streaming_rtn._seeded_rotation(
+        config, args, torch.device("cpu"), torch.float32)
+
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(args.seed)
+        legacy = random_hadamard_matrix(
+            config.hidden_size, torch.device("cpu"), dtype=torch.float32)
+
+    torch.manual_seed(18)
+    values = torch.randn(3, config.hidden_size)
+    expected = matmul_hadU(values * signs.to(torch.float32))
+    actual = values @ q
+
+    assert signs.dtype == torch.int8
+    assert signs.shape == (config.hidden_size,)
+    assert set(signs.tolist()) == {-1, 1}
+    assert torch.equal(q, legacy)
+    assert torch.allclose(actual, expected, atol=2e-6, rtol=2e-6)
+
+
+def test_rotation_checkpoint_metadata_records_qwen3_32b_hadk_contract():
+    class FakeSource:
+        @staticmethod
+        def tensors(keys):
+            assert keys == ["model.norm.weight"]
+            return {"model.norm.weight": torch.arange(
+                5120, dtype=torch.bfloat16)}
+
+    signs = torch.ones(5120, dtype=torch.int8)
+    signs[1::2] = -1
+    metadata = streaming_rtn._rotation_checkpoint_metadata(
+        FakeSource(), SimpleNamespace(hidden_size=5120), signs,
+        SimpleNamespace(
+            seed=0, rotation_device="cuda", rotation_dtype="float32"))
+
+    assert metadata["quarot_rotation_format"] == "hadk_v1"
+    assert metadata["quarot_rotation_width"] == 5120
+    assert metadata["quarot_rotation_remainder"] == 40
+    assert metadata["quarot_rotation_inner"] == 128
+    assert metadata["quarot_rotation_signs"][:4] == [1, -1, 1, -1]
+    assert len(metadata["quarot_final_norm_weight"]) == 5120
+
+
+@pytest.mark.parametrize(
+    ("signs", "norm", "message"),
+    [
+        ([1.5, -1, 1, -1], [1] * 4, r"only -1 or \+1"),
+        ([1, -1, 1], [1] * 4, "rotation sign width"),
+        ([1, -1, 1, -1], [1] * 3, "final norm width"),
+        ([1, -1, 1, -1], [1, 1, float("nan"), 1], "non-finite"),
+    ],
+)
+def test_rotation_checkpoint_metadata_rejects_corrupt_basis(
+        signs, norm, message):
+    class FakeSource:
+        def tensors(self, keys):
+            assert keys == ["model.norm.weight"]
+            return {"model.norm.weight": torch.tensor(norm)}
+
+    args = SimpleNamespace(
+        seed=0, rotation_device="cpu", rotation_dtype="float32")
+    with pytest.raises(ValueError, match=message):
+        streaming_rtn._rotation_checkpoint_metadata(
+            FakeSource(), SimpleNamespace(hidden_size=4),
+            torch.tensor(signs), args)
+
+
 def test_finalize_output_records_streaming_checkpoint_contract(
         tmp_path, monkeypatch):
     class FakeConfig:
@@ -204,7 +304,20 @@ def test_finalize_output_records_streaming_checkpoint_contract(
 
     quantize_checkpoint.finalize_output(
         output, "source/model", FakeConfig, FakeRuntime, "qwen3_quarot",
-        SimpleNamespace(__file__=str(runtime_source)))
+        SimpleNamespace(__file__=str(runtime_source)), {
+            "streaming_signature": {"method": "rtn", "seed": 0},
+            "rotation_metadata": {
+                "quarot_rotation_format": "hadk_v1",
+                "quarot_rotation_width": 32,
+                "quarot_rotation_remainder": 1,
+                "quarot_rotation_inner": 32,
+                "quarot_rotation_seed": 0,
+                "quarot_rotation_device": "cuda",
+                "quarot_rotation_dtype": "float32",
+                "quarot_rotation_signs": [1] * 32,
+                "quarot_final_norm_weight": [1.0] * 32,
+            }
+        })
 
     config = json.loads((output / "config.json").read_text())
     assert config["model_type"] == "qwen3_quarot"
@@ -216,4 +329,12 @@ def test_finalize_output_records_streaming_checkpoint_contract(
     assert config["quarot_checkpoint_format_version"] == 2
     assert config["quarot_ffn_format"] == "grouped_h256_v1"
     assert config["quarot_activation_clip_ratio"] == 0.9
+    assert config["quarot_source_model_id"] == "source/model"
+    assert config["quarot_conversion"] == {"method": "rtn", "seed": 0}
+    assert config["quarot_rotation_format"] == "hadk_v1"
+    assert config["quarot_rotation_width"] == 32
+    assert config["quarot_rotation_remainder"] == 1
+    assert config["quarot_rotation_inner"] == 32
+    assert config["quarot_rotation_signs"] == [1] * 32
+    assert config["quarot_final_norm_weight"] == [1.0] * 32
     assert (output / "quarot.py").read_text() == "# runtime source\n"

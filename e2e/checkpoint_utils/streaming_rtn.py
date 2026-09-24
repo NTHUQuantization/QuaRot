@@ -12,10 +12,10 @@ from safetensors.torch import save_file
 from transformers.utils import SAFE_WEIGHTS_INDEX_NAME, SAFE_WEIGHTS_NAME
 from transformers.utils.hub import cached_file
 
-from e2e.checkpoint_utils import gptq_utils, rotation_utils
+from e2e.checkpoint_utils import gptq_utils
 from quarot.functional import apply_exact_had_to_linear, pack_i4
 from quarot.functional.hadamard import (
-    grouped_ffn_physical_width, matmul_grouped_h256)
+    get_hadK, grouped_ffn_physical_width, matmul_grouped_h256, matmul_hadU)
 
 
 _STREAM_VERSION = 2
@@ -91,7 +91,15 @@ def _matmul(left, right, device, compute_dtype, output_dtype):
     ).to(device="cpu", dtype=output_dtype)
 
 
-def _seeded_rotation_matrix(config, args, rotation_device, compute_dtype):
+def _random_hadamard_matrix_with_signs(size, device, dtype):
+    """Build ``Q = D U`` and retain the exact randomized diagonal ``D``."""
+    signs = torch.randint(low=0, high=2, size=(size,), device=device).to(dtype)
+    signs = signs * 2 - 1
+    q = matmul_hadU(torch.diag(signs))
+    return q, signs.to(device="cpu", dtype=torch.int8)
+
+
+def _seeded_rotation(config, args, rotation_device, compute_dtype):
     """Build the checkpoint rotation without consuming caller RNG state.
 
     Streaming conversion may be resumed from a process whose RNG history is
@@ -109,13 +117,17 @@ def _seeded_rotation_matrix(config, args, rotation_device, compute_dtype):
         with torch.random.fork_rng(devices=[device_index], device_type="cuda"):
             with torch.cuda.device(device_index):
                 torch.cuda.manual_seed(int(args.seed))
-                return rotation_utils.random_hadamard_matrix(
+                return _random_hadamard_matrix_with_signs(
                     config.hidden_size, rotation_device, dtype=compute_dtype)
 
     with torch.random.fork_rng(devices=[]):
         torch.manual_seed(int(args.seed))
-        return rotation_utils.random_hadamard_matrix(
+        return _random_hadamard_matrix_with_signs(
             config.hidden_size, rotation_device, dtype=compute_dtype)
+
+
+def _seeded_rotation_matrix(config, args, rotation_device, compute_dtype):
+    return _seeded_rotation(config, args, rotation_device, compute_dtype)[0]
 
 
 def _hadamard(weight, *, output=False, had_dim=-1):
@@ -255,6 +267,44 @@ def _global_tensors(source, config, q, device, compute_dtype):
     return {_remap(key): value for key, value in tensors.items()}
 
 
+def _rotation_checkpoint_metadata(source, config, rotation_signs, args):
+    """Return compact metadata needed to restore PARD2 target features.
+
+    The offline rotation is Q = D U. Persisting D and the final RMSNorm scale
+    avoids reopening the dense source checkpoint at runtime, which is
+    especially important for a streaming 32B conversion.
+    """
+    signs = torch.as_tensor(
+        rotation_signs, device="cpu").reshape(-1)
+    width = int(config.hidden_size)
+    if signs.numel() != width:
+        raise ValueError(f"rotation sign width {signs.numel()} != {width}")
+    if not torch.isfinite(signs).all():
+        raise ValueError("rotation signs contain non-finite values")
+    if not torch.all((signs == -1) | (signs == 1)):
+        raise ValueError("rotation signs must contain only -1 or +1")
+    signs = signs.to(dtype=torch.int8)
+    final_norm = source.tensors(["model.norm.weight"])[
+        "model.norm.weight"].to(
+            device="cpu", dtype=torch.float32).reshape(-1)
+    if final_norm.numel() != width:
+        raise ValueError(f"final norm width {final_norm.numel()} != {width}")
+    if not torch.isfinite(final_norm).all():
+        raise ValueError("final norm contains non-finite values")
+    _, remainder = get_hadK(int(config.hidden_size))
+    return {
+        "quarot_rotation_format": "hadk_v1",
+        "quarot_rotation_width": int(config.hidden_size),
+        "quarot_rotation_remainder": int(remainder),
+        "quarot_rotation_inner": int(config.hidden_size) // int(remainder),
+        "quarot_rotation_seed": int(args.seed),
+        "quarot_rotation_device": str(args.rotation_device),
+        "quarot_rotation_dtype": str(args.rotation_dtype),
+        "quarot_rotation_signs": signs.tolist(),
+        "quarot_final_norm_weight": final_norm.tolist(),
+    }
+
+
 @torch.inference_mode()
 def convert(model, output, config, args):
     """Stream a rotated RtN checkpoint to one resumable shard per layer."""
@@ -266,10 +316,13 @@ def convert(model, output, config, args):
     device = torch.device("cuda:0")
     rotation_device = device if args.rotation_device == "cuda" else torch.device("cpu")
     compute_dtype = {"float32": torch.float32, "float64": torch.float64}[args.rotation_dtype]
-    q = _seeded_rotation_matrix(
+    q, rotation_signs = _seeded_rotation(
         config, args, rotation_device, compute_dtype)
+    rotation_metadata = _rotation_checkpoint_metadata(
+        source, config, rotation_signs, args)
     signature_data = {
-        "version": _STREAM_VERSION, "model": str(model), "seed": args.seed,
+        "version": _STREAM_VERSION, "method": "rtn",
+        "model": str(model), "seed": args.seed,
         "rotation_device": args.rotation_device,
         "rotation_dtype": args.rotation_dtype, "w_bits": args.w_bits,
         "w_groupsize": args.w_groupsize, "w_asym": args.w_asym,
@@ -309,4 +362,7 @@ def convert(model, output, config, args):
     temporary = index_path.with_suffix(index_path.suffix + ".tmp")
     temporary.write_text(json.dumps(index, indent=2, sort_keys=True) + "\n")
     os.replace(temporary, index_path)
-    return signature_data
+    return {
+        "streaming_signature": signature_data,
+        "rotation_metadata": rotation_metadata,
+    }

@@ -320,6 +320,7 @@ __global__ void bpre_grouped_scale_kernel(
 // scaled weight matrices and writes a contiguous [B0 | B1 | B2] result. All
 // supported model widths are 16-column aligned, so a WMMA tile never straddles
 // two matrices.
+template <uint32_t BlockNWaves>
 __global__ void bpre_multi_scale_kernel(
     const Int4Storage* __restrict__ A,
     const Int4Storage* __restrict__ B0,
@@ -334,10 +335,11 @@ __global__ void bpre_multi_scale_kernel(
     bool allow_interleaved)
 {
 #if defined(QUAROT_BPRE_GFX12)
+    const uint32_t wave = threadIdx.x >> 5u;
     const uint32_t lane = threadIdx.x & 31u;
     const uint32_t lane16 = lane & 15u;
     const uint32_t row_blk = lane >> 4u;
-    const uint32_t global_tile = blockIdx.x;
+    const uint32_t global_tile = blockIdx.x * BlockNWaves + wave;
     const uint32_t global_col = global_tile * 16u + lane16;
     const uint32_t total_n = N0 + N1 + N2;
     if(global_col >= total_n) return;
@@ -569,12 +571,14 @@ enum class DispatchVariant
 {
     Kv1024LdsSwizzle,
     N4096LdsSwizzle,
+    N5120BPre,
     N6656BPre,
     N8192BPre,
     N11008BPre,
     N14336BPre,
     N17920BPre,
     N22016BPre,
+    N25600BPre,
     FallbackBPre,
 };
 
@@ -584,12 +588,14 @@ DispatchVariant select_variant(uint32_t N)
     {
     case 1024: return DispatchVariant::Kv1024LdsSwizzle;
     case 4096: return DispatchVariant::N4096LdsSwizzle;
+    case 5120: return DispatchVariant::N5120BPre;
     case 6656: return DispatchVariant::N6656BPre;
     case 8192: return DispatchVariant::N8192BPre;
     case 11008: return DispatchVariant::N11008BPre;
     case 14336: return DispatchVariant::N14336BPre;
     case 17920: return DispatchVariant::N17920BPre;
     case 22016: return DispatchVariant::N22016BPre;
+    case 25600: return DispatchVariant::N25600BPre;
     default: return DispatchVariant::FallbackBPre;
     }
 }
@@ -620,6 +626,43 @@ bool env_flag_disabled(const char* name)
            std::string(value) == "NO";
 }
 
+uint32_t read_nwaves_override(const char* name, uint32_t fallback)
+{
+    const char* value = std::getenv(name);
+    if(value == nullptr)
+    {
+        return fallback;
+    }
+    const unsigned long parsed = std::strtoul(value, nullptr, 10);
+    if(parsed != 1u && parsed != 2u && parsed != 4u && parsed != 8u)
+    {
+        throw std::invalid_argument(
+            std::string(name) + " must be one of 1, 2, 4, or 8");
+    }
+    return static_cast<uint32_t>(parsed);
+}
+
+uint32_t qwen3_32b_grouped_scale_nwaves()
+{
+    static const uint32_t value = read_nwaves_override(
+        "QUAROT_QWEN3_32B_GROUPED_NWAVES", 4u);
+    return value;
+}
+
+uint32_t qwen3_32b_multi_scale_nwaves()
+{
+    static const uint32_t value = read_nwaves_override(
+        "QUAROT_QWEN3_32B_MULTI_NWAVES", 2u);
+    return value;
+}
+
+bool is_qwen3_32b_multi_scale(uint32_t N0, uint32_t N1, uint32_t N2, uint32_t K)
+{
+    return K == 5120u &&
+           ((N0 == 8192u && N1 == 1024u && N2 == 1024u) ||
+            (N0 == 25600u && N1 == 25600u && N2 == 0u));
+}
+
 bool bpre_cache_disabled()
 {
     if(env_flag_enabled("GEMM_INT4_HIP_DISABLE_BPRE") ||
@@ -647,12 +690,14 @@ const char* variant_name(DispatchVariant variant)
     {
     case DispatchVariant::Kv1024LdsSwizzle: return "N=1024 LDS swizzle, block4x4 mt2 nt2 LDS64";
     case DispatchVariant::N4096LdsSwizzle: return "N=4096 LDS swizzle, block4x4 mt2 nt2 LDS64";
+    case DispatchVariant::N5120BPre: return "N=5120 Qwen3-32B cached B-prepack, block2x2 mt2 nt4";
     case DispatchVariant::N6656BPre: return "N=6656 cached B-prepack, block2x2 mt2 nt4";
     case DispatchVariant::N8192BPre: return "N=8192 cached B-prepack, block2x2 mt2 nt4";
     case DispatchVariant::N11008BPre: return "N=11008 cached B-prepack, block2x2 mt2 nt4";
     case DispatchVariant::N14336BPre: return "N=14336 cached B-prepack, block2x2 mt2 nt4";
     case DispatchVariant::N17920BPre: return "N=17920 cached B-prepack, block2x2 mt2 nt4";
     case DispatchVariant::N22016BPre: return "N=22016 cached B-prepack, block2x2 mt2 nt4";
+    case DispatchVariant::N25600BPre: return "N=25600 Qwen3-32B cached B-prepack, block2x2 mt2 nt4";
     case DispatchVariant::FallbackBPre: return "fallback cached B-prepack, block4x4 mt1 nt2";
     }
     return "unknown";
@@ -669,6 +714,8 @@ const char* variant_name_memory_mode(DispatchVariant variant)
     {
     case DispatchVariant::Kv1024LdsSwizzle: return "N=1024 LDS swizzle, block4x4 mt2 nt2 LDS64";
     case DispatchVariant::N4096LdsSwizzle: return "N=4096 LDS swizzle, block4x4 mt2 nt2 LDS64";
+    case DispatchVariant::N5120BPre:
+        return "N=5120 Qwen3-32B memory mode, row-packed LDS swizzle, block2x2 mt2 nt4 LDS64";
     case DispatchVariant::N6656BPre:
         return "N=6656 memory mode, row-packed LDS swizzle, block2x2 mt2 nt4 LDS64";
     case DispatchVariant::N8192BPre:
@@ -681,6 +728,8 @@ const char* variant_name_memory_mode(DispatchVariant variant)
         return "N=17920 memory mode, row-packed LDS swizzle, block2x4 mt4 nt4 LDS128";
     case DispatchVariant::N22016BPre:
         return "N=22016 memory mode, row-packed LDS swizzle, block2x4 mt4 nt4 LDS128";
+    case DispatchVariant::N25600BPre:
+        return "N=25600 Qwen3-32B memory mode, row-packed LDS swizzle, block2x4 mt4 nt4 LDS128";
     case DispatchVariant::FallbackBPre:
         return "fallback memory mode, row-packed LDS swizzle, block4x4 mt1 nt2 LDS64";
     }
@@ -695,6 +744,8 @@ const char* variant_name_bpre_only(DispatchVariant variant)
         return "N=1024 BPre-only, block2x2 mt2 nt4";
     case DispatchVariant::N4096LdsSwizzle:
         return "N=4096 BPre-only, block2x2 mt2 nt4";
+    case DispatchVariant::N5120BPre:
+        return "N=5120 Qwen3-32B BPre-only, block2x2 mt2 nt4";
     case DispatchVariant::N6656BPre:
         return "N=6656 BPre-only, block2x2 mt2 nt4";
     case DispatchVariant::N8192BPre:
@@ -707,6 +758,8 @@ const char* variant_name_bpre_only(DispatchVariant variant)
         return "N=17920 BPre-only, block2x2 mt2 nt4";
     case DispatchVariant::N22016BPre:
         return "N=22016 BPre-only, block2x2 mt2 nt4";
+    case DispatchVariant::N25600BPre:
+        return "N=25600 Qwen3-32B BPre-only, block2x2 mt2 nt4";
     case DispatchVariant::FallbackBPre:
         return "fallback BPre-only, block4x4 mt1 nt2";
     }
@@ -719,12 +772,14 @@ bool variant_uses_bpre(DispatchVariant variant)
     {
     case DispatchVariant::Kv1024LdsSwizzle:
     case DispatchVariant::N4096LdsSwizzle: return false;
+    case DispatchVariant::N5120BPre:
     case DispatchVariant::N6656BPre:
     case DispatchVariant::N8192BPre:
     case DispatchVariant::N11008BPre:
     case DispatchVariant::N14336BPre:
     case DispatchVariant::N17920BPre:
     case DispatchVariant::N22016BPre:
+    case DispatchVariant::N25600BPre:
     case DispatchVariant::FallbackBPre: return true;
     }
     return true;
@@ -841,6 +896,52 @@ void launch_lds_swizzle(const Int4Storage* A,
         <<<grid, block>>>(A, B, C, M, N, K);
 }
 
+template <uint32_t BlockNWaves>
+void launch_bpre_grouped_scale(const Int4Storage* A,
+                               const Int4Storage* BPre,
+                               const half* scale_group,
+                               const half* scale_weight,
+                               half* C,
+                               uint32_t M,
+                               uint32_t N,
+                               uint32_t K,
+                               uint32_t scale_groups)
+{
+    constexpr uint32_t kThreadsPerBlock = 32u * BlockNWaves;
+    const dim3 block(kThreadsPerBlock);
+    const dim3 grid((N + 16u * BlockNWaves - 1u) / (16u * BlockNWaves),
+                    (M + 15u) / 16u);
+
+    bpre_grouped_scale_kernel<1, BlockNWaves><<<grid, block>>>(
+        A, BPre, scale_group, scale_weight, C, M, N, K, scale_groups);
+}
+
+template <uint32_t BlockNWaves>
+void launch_bpre_multi_scale(const Int4Storage* A,
+                             const Int4Storage* B0,
+                             const Int4Storage* B1,
+                             const Int4Storage* B2,
+                             const half* scale_activation,
+                             const half* scale_weight0,
+                             const half* scale_weight1,
+                             const half* scale_weight2,
+                             half* C,
+                             uint32_t M, uint32_t N0, uint32_t N1,
+                             uint32_t N2, uint32_t K,
+                             bool allow_interleaved)
+{
+    constexpr uint32_t kThreadsPerBlock = 32u * BlockNWaves;
+    const uint32_t total_n = N0 + N1 + N2;
+    const dim3 block(kThreadsPerBlock);
+    const dim3 grid((total_n + 16u * BlockNWaves - 1u) /
+                        (16u * BlockNWaves),
+                    (M + 15u) / 16u);
+
+    bpre_multi_scale_kernel<BlockNWaves><<<grid, block>>>(
+        A, B0, B1, B2, scale_activation, scale_weight0, scale_weight1,
+        scale_weight2, C, M, N0, N1, N2, K, allow_interleaved);
+}
+
 void dispatch_matmul(const Int4Storage* A,
                      const Int4Storage* BRow,
                      const Int4Storage* BPre,
@@ -862,6 +963,7 @@ void dispatch_matmul(const Int4Storage* A,
     case DispatchVariant::N4096LdsSwizzle:
         launch_lds_swizzle<4, 4, 2, 2, 64>(A, BRow, C, M, N, K);
         break;
+    case DispatchVariant::N5120BPre:
     case DispatchVariant::N6656BPre:
         if(BPre != nullptr)
         {
@@ -892,6 +994,7 @@ void dispatch_matmul(const Int4Storage* A,
             launch_lds_swizzle<2, 2, 2, 4, 64>(A, BRow, C, M, N, K);
         }
         break;
+    case DispatchVariant::N25600BPre:
     case DispatchVariant::N14336BPre:
         if(BPre != nullptr)
         {
@@ -961,12 +1064,14 @@ void dispatch_matmul_bpre_only(const Int4Storage* A,
     {
     case DispatchVariant::Kv1024LdsSwizzle:
     case DispatchVariant::N4096LdsSwizzle:
+    case DispatchVariant::N5120BPre:
     case DispatchVariant::N6656BPre:
     case DispatchVariant::N8192BPre:
     case DispatchVariant::N11008BPre:
     case DispatchVariant::N14336BPre:
     case DispatchVariant::N17920BPre:
     case DispatchVariant::N22016BPre:
+    case DispatchVariant::N25600BPre:
         launch_bpre<2, 2, 2, 4>(A, BPre, C, M, N, K);
         break;
     case DispatchVariant::FallbackBPre:
@@ -1153,10 +1258,27 @@ void matmul_bpre_grouped_scale_host(const Int4Storage* A,
     }
     else if(M <= 16u)
     {
-        const dim3 block(128u);
-        const dim3 grid((N + 63u) / 64u, (M + 15u) / 16u);
-        bpre_grouped_scale_kernel<1, 4><<<grid, block>>>(
-            A, BPre, scale_group, scale_weight, C, M, N, K, scale_groups);
+        const bool exact_qwen3_32b =
+            (N == 5120u && (K == 8192u || K == 25600u)) ||
+            (N == 25600u && K == 5120u);
+        const uint32_t nwaves = exact_qwen3_32b
+            ? qwen3_32b_grouped_scale_nwaves() : 4u;
+        if(nwaves == 8u)
+            launch_bpre_grouped_scale<8>(
+                A, BPre, scale_group, scale_weight, C, M, N, K,
+                scale_groups);
+        else if(nwaves == 4u)
+            launch_bpre_grouped_scale<4>(
+                A, BPre, scale_group, scale_weight, C, M, N, K,
+                scale_groups);
+        else if(nwaves == 2u)
+            launch_bpre_grouped_scale<2>(
+                A, BPre, scale_group, scale_weight, C, M, N, K,
+                scale_groups);
+        else
+            launch_bpre_grouped_scale<1>(
+                A, BPre, scale_group, scale_weight, C, M, N, K,
+                scale_groups);
     }
     else
     {
@@ -1190,13 +1312,26 @@ void matmul_bpre_multi_scale_host(const Int4Storage* A,
         throw std::invalid_argument("multi-scale GEMM received a null device pointer");
     if((N0 % 16u) || (N1 % 16u) || (N2 % 16u) || (K % kWmmaK))
         throw std::invalid_argument("multi-scale GEMM dimensions must be WMMA aligned");
-            const dim3 block(32u);
-        const dim3 grid((N0 + N1 + N2) / 16u, (M + 15u) / 16u);
-        const char* interleaved_env = std::getenv(
-            "QUAROT_INTERLEAVED_PROJECTIONS");
-        const bool allow_interleaved = interleaved_env == nullptr ||
-            std::strcmp(interleaved_env, "0") != 0;
-        bpre_multi_scale_kernel<<<grid, block>>>(
+    const char* interleaved_env = std::getenv(
+        "QUAROT_INTERLEAVED_PROJECTIONS");
+    const bool allow_interleaved = interleaved_env == nullptr ||
+        std::strcmp(interleaved_env, "0") != 0;
+    const uint32_t nwaves = is_qwen3_32b_multi_scale(N0, N1, N2, K)
+        ? qwen3_32b_multi_scale_nwaves() : 1u;
+    if(nwaves == 8u)
+        launch_bpre_multi_scale<8>(
+            A, B0, B1, B2, scale_activation, scale_weight0, scale_weight1,
+            scale_weight2, C, M, N0, N1, N2, K, allow_interleaved);
+    else if(nwaves == 4u)
+        launch_bpre_multi_scale<4>(
+            A, B0, B1, B2, scale_activation, scale_weight0, scale_weight1,
+            scale_weight2, C, M, N0, N1, N2, K, allow_interleaved);
+    else if(nwaves == 2u)
+        launch_bpre_multi_scale<2>(
+            A, B0, B1, B2, scale_activation, scale_weight0, scale_weight1,
+            scale_weight2, C, M, N0, N1, N2, K, allow_interleaved);
+    else
+        launch_bpre_multi_scale<1>(
             A, B0, B1, B2, scale_activation, scale_weight0, scale_weight1,
             scale_weight2, C, M, N0, N1, N2, K, allow_interleaved);
     check_hip(hipGetLastError(), "bpre_multi_scale_kernel launch");

@@ -15,7 +15,7 @@ def _oracle(value, width, eps):
     return packed.view(*value.shape[:-1], width // 2), scales
 
 
-@pytest.mark.parametrize("shape", [(1, 2), (3, 128), (2, 15, 4096), (1, 16, 8192)])
+@pytest.mark.parametrize("shape", [(1, 2), (3, 128), (1, 1, 5120), (2, 15, 4096), (1, 16, 8192)])
 @pytest.mark.parametrize("eps", [1e-6, 1e-5])
 def test_bit_exact(shape, eps):
     torch.manual_seed(sum(shape))

@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 import json
-import math
 from pathlib import Path
 import time
 from typing import Iterable
@@ -16,18 +15,62 @@ from typing import Iterable
 import torch
 
 
-def _normalized_hadamard_cpu(value: torch.Tensor) -> torch.Tensor:
-    """Reference normalized Sylvester transform used to recover rotation metadata."""
-    result = value.float().contiguous().clone()
-    width, stride = result.shape[-1], 1
-    if width <= 0 or width & (width - 1):
-        raise ValueError("PARD2 target hidden width must be a power of two")
-    while stride < width:
-        pair = result.view(*result.shape[:-1], -1, 2, stride)
-        left, right = pair[..., 0, :].clone(), pair[..., 1, :].clone()
-        pair[..., 0, :], pair[..., 1, :] = left + right, left - right
-        stride *= 2
-    return result / math.sqrt(width)
+TD_PROXY_QWEN3_14B_ON_QWEN3_32B = "qwen3-14b-on-qwen3-32b"
+PARD2_PROFILES = ("qwen3_8b", "qwen3_14b", "qwen3_32b")
+
+
+def _normalized_hadamard_cpu(
+        value: torch.Tensor, *, transpose: bool = False) -> torch.Tensor:
+    """Reference normalized HadK transform used by offline QuaRot.
+
+    Unlike a Sylvester-only implementation, this follows ``get_hadK`` for
+    non-power-of-two dense widths. Qwen3-32B's width 5120 uses the existing
+    K=40 remainder and a 128-wide inner FHT.
+    """
+    from quarot.functional.hadamard import matmul_hadU
+
+    if value.device.type != "cpu":
+        raise ValueError("the reference HadK transform requires a CPU tensor")
+    return matmul_hadU(
+        value.float().contiguous(), transpose=bool(transpose))
+
+
+def _inverse_hadamard_cuda(value: torch.Tensor, *, had_k=None,
+                            remainder=None) -> torch.Tensor:
+    """Apply normalized U^T in gfx1201-safe row chunks.
+
+    ``matmul_had_HIP`` is a pure power-of-two FHT. TD restoration instead has
+    to invert the exact generalized matrix used for the target checkpoint.
+    The local HadK factory supplies the transposed remainder, while limiting
+    each dispatch to eight rows preserves the established gfx1201 contract.
+    """
+    if not value.is_cuda:
+        raise ValueError("the runtime inverse HadK transform requires CUDA/HIP")
+    from quarot.functional.hadamard import get_hadK
+    from quarot.transformers.kv_cache import matmul_had_HIP
+
+    width = int(value.shape[-1])
+    if remainder is None:
+        had_k, remainder = get_hadK(width, transpose=True)
+    remainder = int(remainder)
+    rows = value.contiguous().view(-1, width)
+    if remainder == 1:
+        restored = matmul_had_HIP(rows, value.dtype)
+        return restored.view(value.shape)
+    if had_k is None or tuple(had_k.shape) != (remainder, remainder):
+        raise ValueError("inverse HadK remainder matrix has an invalid shape")
+
+    inner = width // remainder
+    # matmul_hadU_cuda would expose rows * remainder FHT rows to hadacore in
+    # one call. That violates gfx1201's <=8-row correctness limit. Reuse the
+    # guarded inner FHT, then apply the small transposed remainder matrix.
+    restored = matmul_had_HIP(
+        rows.view(-1, remainder, inner), value.dtype)
+    restored = torch.matmul(
+        had_k.to(device=value.device, dtype=value.dtype), restored)
+    restored = restored * (remainder ** -0.5)
+    restored = restored.reshape(-1, width)
+    return restored.view(value.shape)
 
 
 def fold_td_projection_weight(weight: torch.Tensor, rotation_signs: torch.Tensor,
@@ -45,8 +88,6 @@ def fold_td_projection_weight(weight: torch.Tensor, rotation_signs: torch.Tensor
     if weight.ndim != 2 or weight.shape[1] != 4 * hidden_size:
         raise ValueError(
             "TD projection weight must have shape [output, 4 * hidden_size]")
-    if hidden_size <= 0 or hidden_size & (hidden_size - 1):
-        raise ValueError("TD hidden size must be a positive power of two")
     signs = rotation_signs.detach().cpu().float().reshape(-1)
     gamma = final_norm_weight.detach().cpu().float().reshape(-1)
     if signs.numel() != hidden_size:
@@ -79,21 +120,70 @@ def _checkpoint_tensor(snapshot, key, rows=None):
         return (tensor[:rows] if rows is not None else tensor[:]).clone()
 
 
+def _basis_from_rotation_metadata(config):
+    """Validate and materialize the self-contained v2 rotation metadata."""
+    metadata = {
+        name: getattr(config, name, None)
+        for name in (
+            "quarot_rotation_format", "quarot_rotation_width",
+            "quarot_rotation_remainder", "quarot_rotation_inner",
+            "quarot_rotation_seed", "quarot_rotation_device",
+            "quarot_rotation_dtype", "quarot_rotation_signs",
+            "quarot_final_norm_weight",
+        )}
+    if all(value is None for value in metadata.values()):
+        return None
+    missing = [name for name, value in metadata.items() if value is None]
+    if missing:
+        raise ValueError(
+            f"incomplete QuaRot TD basis metadata: {', '.join(missing)}")
+    saved_signs = metadata["quarot_rotation_signs"]
+    saved_norm = metadata["quarot_final_norm_weight"]
+    if metadata["quarot_rotation_format"] != "hadk_v1":
+        raise ValueError("unsupported QuaRot TD rotation metadata format")
+
+    from quarot.functional.hadamard import get_hadK
+
+    hidden_size = int(config.hidden_size)
+    width = int(getattr(config, "quarot_rotation_width", -1))
+    remainder = int(getattr(config, "quarot_rotation_remainder", -1))
+    inner = int(getattr(config, "quarot_rotation_inner", -1))
+    _, expected_remainder = get_hadK(hidden_size)
+    if width != hidden_size:
+        raise ValueError("QuaRot rotation metadata width does not match target")
+    if remainder != expected_remainder or inner != hidden_size // remainder:
+        raise ValueError("QuaRot rotation metadata HadK factorization differs")
+
+    signs = torch.tensor(saved_signs, dtype=torch.float32).reshape(-1)
+    final_norm = torch.tensor(saved_norm, dtype=torch.float32).reshape(-1)
+    if signs.numel() != hidden_size:
+        raise ValueError("invalid quarot_rotation_signs checkpoint metadata")
+    if final_norm.numel() != hidden_size:
+        raise ValueError("invalid quarot_final_norm_weight checkpoint metadata")
+    if not torch.all((signs == 1) | (signs == -1)):
+        raise ValueError("quarot_rotation_signs must contain only -1 or +1")
+    if not torch.isfinite(final_norm).all():
+        raise ValueError("quarot_final_norm_weight contains non-finite values")
+    return signs, final_norm
+
+
 def load_td_target_basis(target, source_snapshot):
-    """Recover x'=x D H metadata and the pre-fusion final RMSNorm scale."""
-    saved_signs = getattr(target.config, "quarot_rotation_signs", None)
-    saved_norm = getattr(target.config, "quarot_final_norm_weight", None)
-    if saved_signs is not None and saved_norm is not None:
-        if len(saved_signs) != target.config.hidden_size:
-            raise ValueError("invalid quarot_rotation_signs checkpoint metadata")
-        if len(saved_norm) != target.config.hidden_size:
-            raise ValueError("invalid quarot_final_norm_weight checkpoint metadata")
-        return torch.tensor(saved_signs, dtype=torch.float32), torch.tensor(
-            saved_norm, dtype=torch.float32)
+    """Load v2 TD basis metadata, with source recovery only for legacy 8B."""
+    saved = _basis_from_rotation_metadata(target.config)
+    if saved is not None:
+        return saved
+    if source_snapshot is None:
+        raise ValueError(
+            "legacy TD target lacks rotation metadata and no source was provided")
+
     source_rows = _checkpoint_tensor(
         source_snapshot, "model.embed_tokens.weight", rows=8).float()
     rotated_rows = target.get_input_embeddings().weight[:8].detach().cpu().float()
-    restored_columns = _normalized_hadamard_cpu(rotated_rows)
+    hidden_size = int(target.config.hidden_size)
+    if source_rows.shape[-1] != hidden_size:
+        raise ValueError("legacy TD source hidden width differs from target")
+    restored_columns = _normalized_hadamard_cpu(
+        rotated_rows, transpose=True)
     signs = torch.sign((restored_columns * source_rows).sum(dim=0))
     signs[signs == 0] = 1
     reconstructed = _normalized_hadamard_cpu(source_rows * signs)
@@ -103,6 +193,28 @@ def load_td_target_basis(target, source_snapshot):
             f"cannot recover fused target rotation signs (embedding RMSE {rmse:.5f})")
     final_norm = _checkpoint_tensor(source_snapshot, "model.norm.weight").float()
     return signs, final_norm
+
+
+def _snapshot_revision(path):
+    if path is None:
+        return None
+    parts = Path(path).resolve().parts
+    for index, part in enumerate(parts[:-1]):
+        if part == "snapshots":
+            return parts[index + 1]
+    return None
+
+
+def _expect_config_fields(config, expected, label):
+    for name, wanted in expected.items():
+        actual = getattr(config, name, None)
+        try:
+            matches = int(actual) == int(wanted)
+        except (TypeError, ValueError):
+            matches = False
+        if not matches:
+            raise ValueError(
+                f"{label} {name} must be {wanted}, got {actual!r}")
 
 
 @dataclass(frozen=True)
@@ -117,14 +229,84 @@ class Pard2Spec:
     target_layers: tuple[int, ...] = (-1, -8, -16, -24)
     target_dim: int = 16384
     projection_scale: float = 0.02
+    benchmark_profile: str | None = None
+    td_proxy_profile: str | None = None
 
-    def validate(self, target_config, draft_config) -> None:
+    @classmethod
+    def for_benchmark_profile(cls, profile=None, td_proxy_profile=None, *,
+                              mode=None):
+        if profile not in (None, *PARD2_PROFILES):
+            raise ValueError(f"unknown PARD2 benchmark profile {profile!r}")
+        if td_proxy_profile is not None:
+            if profile not in (None, "qwen3_32b"):
+                raise ValueError(
+                    "the TD proxy profile requires qwen3_32b")
+            return cls.for_proxy_profile(td_proxy_profile)
+        if profile == "qwen3_14b":
+            # The paper's target-independent Qwen3 family evaluation uses one
+            # shared drafter. Keep the 8B-aligned checkpoint for TI and reserve
+            # the 14B-aligned checkpoint/warp for TD.
+            if mode == "pard2-ti":
+                return cls(
+                    target_model_id="Qwen/Qwen3-14B",
+                    target_revision=(
+                        "40c069824f4251a91eefaf281ebe4c544efd3e18"),
+                    benchmark_profile=profile,
+                )
+            return cls(
+                model_id="amd/PARD2-Qwen3-14B",
+                revision="679eff0b65ffaf5abd2dadd21a17909562935798",
+                target_model_id="Qwen/Qwen3-14B",
+                target_revision="40c069824f4251a91eefaf281ebe4c544efd3e18",
+                target_dim=20480,
+                benchmark_profile=profile,
+            )
+        if profile == "qwen3_32b":
+            return cls(
+                target_model_id="Qwen/Qwen3-32B",
+                target_revision="9216db5781bf21249d130ec9da846c4624c16137",
+                benchmark_profile=profile,
+            )
+        return cls(benchmark_profile=profile)
+
+    @classmethod
+    def for_proxy_profile(cls, profile=None):
+        if profile is None:
+            return cls()
+        if profile != TD_PROXY_QWEN3_14B_ON_QWEN3_32B:
+            raise ValueError(f"unknown TD proxy profile {profile!r}")
+        return cls(
+            model_id="amd/PARD2-Qwen3-14B",
+            revision="679eff0b65ffaf5abd2dadd21a17909562935798",
+            target_model_id="Qwen/Qwen3-32B",
+            target_revision="9216db5781bf21249d130ec9da846c4624c16137",
+            target_dim=20480,
+            benchmark_profile="qwen3_32b",
+            td_proxy_profile=profile,
+        )
+
+    @property
+    def target_alignment(self):
+        return ("cross_target_proxy"
+                if self.td_proxy_profile is not None else "strict")
+
+    def validate(self, target_config, draft_config, *,
+                 mode="pard2-td", draft_snapshot=None) -> None:
+        if mode not in ("pard2-ti", "pard2-td"):
+            raise ValueError("PARD2 spec validation requires TI or TD mode")
+        if self.td_proxy_profile is not None and mode != "pard2-td":
+            raise ValueError("a TD proxy profile is valid only in pard2-td mode")
         if getattr(target_config, "model_type", None) not in ("qwen3", "qwen3_quarot"):
             raise ValueError("selected PARD2 target must be a dense Qwen3 runtime")
-        if int(target_config.hidden_size) != 4096 or int(target_config.num_hidden_layers) != 36:
-            raise ValueError("PARD2-Qwen3-8B requires a 36-layer, 4096-wide target")
         if int(target_config.vocab_size) != int(draft_config.vocab_size):
             raise ValueError("target and PARD2 vocabularies differ")
+        _expect_config_fields(draft_config, {
+            "hidden_size": 1024,
+            "intermediate_size": 3072,
+            "num_hidden_layers": 28,
+            "num_attention_heads": 16,
+            "num_key_value_heads": 8,
+        }, "PARD2 drafter")
         expected = {
             "pard_token": self.pard_token,
             "pard2_target_dim": self.target_dim,
@@ -136,6 +318,69 @@ class Pard2Spec:
             raise ValueError("draft hidden taps do not match pinned PARD2 spec")
         if abs(float(draft_config.pard2_scale) - self.projection_scale) > 1e-12:
             raise ValueError("draft projection scale does not match pinned PARD2 spec")
+
+        # Legacy callers did not identify a target profile. Keep their TI
+        # path target-independent, while explicit formal profiles validate
+        # the actual target architecture before allocating GPU memory.
+        if mode == "pard2-ti" and self.benchmark_profile is None:
+            return
+
+        if self.benchmark_profile == "qwen3_14b":
+            expected_target = {
+                "hidden_size": 5120,
+                "intermediate_size": 17408,
+                "num_hidden_layers": 40,
+                "num_attention_heads": 40,
+                "num_key_value_heads": 8,
+                "head_dim": 128,
+            }
+        elif (self.benchmark_profile == "qwen3_32b"
+              or self.td_proxy_profile is not None):
+            expected_target = {
+                "hidden_size": 5120,
+                "intermediate_size": 25600,
+                "num_hidden_layers": 64,
+                "num_attention_heads": 64,
+                "num_key_value_heads": 8,
+                "head_dim": 128,
+            }
+        else:
+            expected_target = {
+                "hidden_size": 4096,
+                "intermediate_size": 12288,
+                "num_hidden_layers": 36,
+                "num_attention_heads": 32,
+                "num_key_value_heads": 8,
+                "head_dim": 128,
+            }
+        _expect_config_fields(target_config, expected_target, "PARD2 target")
+        if (self.td_proxy_profile is not None
+                or self.benchmark_profile == "qwen3_14b"):
+            draft_revision = _snapshot_revision(draft_snapshot)
+            if draft_revision != self.revision:
+                draft_name = self.model_id.removeprefix("amd/")
+                raise ValueError(
+                    f"requires the pinned {draft_name} draft snapshot "
+                    f"{self.revision}, got {draft_revision!r}")
+            target_source = getattr(
+                target_config, "tokenizer_name_or_path", None)
+            target_revision = _snapshot_revision(target_source)
+            if target_revision != self.target_revision:
+                raise ValueError(
+                    "PARD2 requires a target converted from the pinned "
+                    f"{self.target_model_id} snapshot {self.target_revision}, "
+                    f"got {target_revision!r}")
+
+        if mode == "pard2-ti":
+            return
+        hidden_size = int(target_config.hidden_size)
+        if self.target_dim != len(self.target_layers) * hidden_size:
+            raise ValueError(
+                "draft target projection width does not match tapped target width")
+        layer_count = int(target_config.num_hidden_layers)
+        if any(not -layer_count <= int(tap) < 0
+               for tap in self.target_layers):
+            raise ValueError("draft hidden tap is outside the target layer range")
 
 
 @dataclass
@@ -220,6 +465,8 @@ class SelectedHiddenCollector:
         self.final_norm_weight = final_norm_weight
         self.folded_basis = bool(folded_basis)
         self.basis_cached = False
+        self.inverse_had_k = None
+        self.inverse_remainder = None
         self.rms_norm_eps = float(
             getattr(getattr(target, "config", None), "rms_norm_eps", 1e-6))
         self.handles = []
@@ -242,6 +489,12 @@ class SelectedHiddenCollector:
         self.rotation_signs = self.rotation_signs.to(device=device, dtype=dtype)
         self.final_norm_weight = self.final_norm_weight.to(
             device=device, dtype=dtype)
+        from quarot.functional.hadamard import get_hadK
+        matrix, self.inverse_remainder = get_hadK(
+            int(self.rotation_signs.numel()), transpose=True)
+        self.inverse_had_k = (
+            matrix.to(device=device, dtype=dtype)
+            if matrix is not None else None)
         self.basis_cached = True
 
     def _hook(self, index):
@@ -263,12 +516,45 @@ class SelectedHiddenCollector:
             return torch.cat(values, dim=-1)
         if self.rotation_signs is None:
             return torch.cat(values, dim=-1)
-        from quarot.transformers.kv_cache import matmul_had_HIP
-
         signs = (self.rotation_signs if self.basis_cached else
                  self.rotation_signs.to(
                      device=values[0].device, dtype=values[0].dtype))
-        restored = [matmul_had_HIP(value, value.dtype) * signs for value in values]
+        inverse_kwargs = (
+            {"had_k": self.inverse_had_k,
+             "remainder": self.inverse_remainder}
+            if self.basis_cached else {})
+        width = int(values[0].shape[-1])
+        remainder = self.inverse_remainder
+        if remainder is None:
+            from quarot.functional.hadamard import get_hadK
+            _, remainder = get_hadK(width, transpose=True)
+        if width == 5120 and int(remainder) == 40:
+            # The H40 FP16 reduction can overflow on otherwise finite taps.
+            # A power-of-two prescale preserves the linear map exactly.
+            prescale = 16.0
+            safe_signs = signs.float()
+            restored = [
+                _inverse_hadamard_cuda(
+                    value / prescale, **inverse_kwargs).float()
+                * prescale * safe_signs for value in values]
+            final = restored[0]
+            final = final * torch.rsqrt(
+                final.square().mean(dim=-1, keepdim=True)
+                + self.rms_norm_eps)
+            norm_weight = (
+                self.final_norm_weight.float() if self.basis_cached else
+                self.final_norm_weight.to(
+                    device=final.device, dtype=torch.float32))
+            features = torch.cat(
+                [final * norm_weight, *restored[1:]], dim=-1)
+            if not torch.isfinite(features).all():
+                raise RuntimeError(
+                    "selected-feature restoration produced non-finite values")
+            return features
+
+        restored = [
+            _inverse_hadamard_cuda(value, **inverse_kwargs) * signs
+            for value in values]
         final = restored[0]
         dtype = final.dtype
         final = final.float()
@@ -450,8 +736,17 @@ class FusedPardRuntime:
                  td_basis_fold=False, fused_norm_quant=False):
         if mode not in ("ar", "pard2-ti", "pard2-td"):
             raise ValueError("mode must be ar, pard2-ti, or pard2-td")
+        if mode == "ar" and draft is not None:
+            raise ValueError("AR mode requires draft=None")
+        if mode != "ar" and draft is None:
+            raise ValueError(f"{mode} requires a PARD2 drafter")
+        if spec.td_proxy_profile is not None and mode != "pard2-td":
+            raise ValueError(
+                "a TD proxy spec is valid only in pard2-td mode")
         self.mode, self.target, self.draft, self.tokenizer = mode, target, draft, tokenizer
         self.spec, self.max_cache_len, self.page_size = spec, max_cache_len, page_size
+        self.td_proxy_profile = spec.td_proxy_profile
+        self.target_alignment = spec.target_alignment
         self.ignore_eos, self.adaptive_k = ignore_eos, adaptive_k
         self.native_gqa = bool(native_gqa)
         self.fused_decode_append = bool(fused_decode_append)
@@ -747,6 +1042,75 @@ class FusedPardRuntime:
             stages, torch.cuda.max_memory_allocated(), proposal_lengths)
 
 
+def _load_td_projection_state(draft_snapshot, spec, draft_config):
+    """Validate the pinned CPU warp artifact before allocating the GPU target."""
+    warp_path = Path(draft_snapshot) / "warp_model.bin"
+    if not warp_path.is_file():
+        raise FileNotFoundError(f"missing PARD2 TD warp checkpoint: {warp_path}")
+    state = torch.load(warp_path, map_location="cpu", weights_only=True)
+    if not isinstance(state, dict):
+        raise ValueError("PARD2 TD warp checkpoint must contain a state dict")
+    unrelated = [key for key in state if not key.startswith("target_proj.")]
+    if unrelated:
+        raise ValueError(
+            f"PARD2 TD warp checkpoint has unexpected keys: {unrelated}")
+    projection = {
+        key.removeprefix("target_proj."): value for key, value in state.items()
+    }
+    expected_keys = {"weight"}
+    if bool(getattr(draft_config, "pard2_proj_bias", False)):
+        expected_keys.add("bias")
+    if set(projection) != expected_keys:
+        raise ValueError(
+            "PARD2 TD warp projection keys differ from the config contract")
+    expected_shapes = {
+        "weight": (int(draft_config.hidden_size), int(spec.target_dim)),
+    }
+    if "bias" in expected_keys:
+        expected_shapes["bias"] = (int(draft_config.hidden_size),)
+    for name, shape in expected_shapes.items():
+        tensor = projection[name]
+        if not isinstance(tensor, torch.Tensor) or tuple(tensor.shape) != shape:
+            raise ValueError(
+                f"PARD2 TD warp {name} must have shape {shape}")
+        if not tensor.is_floating_point():
+            raise ValueError(f"PARD2 TD warp {name} must be floating point")
+    return projection
+
+
+def _preflight_pard2(mode, target_config, draft_config=None, *,
+                     draft_snapshot=None, benchmark_profile=None,
+                     td_proxy_profile=None):
+    """Perform all config and warp checks that do not need a GPU model."""
+    if mode not in ("ar", "pard2-ti", "pard2-td"):
+        raise ValueError("mode must be ar, pard2-ti, or pard2-td")
+    if mode == "ar":
+        if draft_config is not None:
+            raise ValueError("AR mode requires no draft config")
+        if td_proxy_profile is not None:
+            raise ValueError("--td-proxy-profile is valid only for pard2-td")
+        return Pard2Spec.for_benchmark_profile(
+            benchmark_profile, mode=mode), None, None
+    if draft_config is None:
+        raise ValueError(f"{mode} requires a PARD2 draft config")
+
+    spec = Pard2Spec.for_benchmark_profile(
+        benchmark_profile, td_proxy_profile, mode=mode)
+    spec.validate(
+        target_config, draft_config, mode=mode,
+        draft_snapshot=draft_snapshot)
+    if mode == "pard2-ti":
+        return spec, None, None
+
+    basis = _basis_from_rotation_metadata(target_config)
+    if spec.td_proxy_profile is not None and basis is None:
+        raise ValueError(
+            "Qwen3-32B TD proxy requires self-contained HadK basis metadata")
+    projection = _load_td_projection_state(
+        draft_snapshot, spec, draft_config)
+    return spec, projection, basis
+
+
 def load_runtime(*, mode, target_checkpoint, draft_snapshot, tokenizer_path,
                  max_cache_len=4096, page_size=128, compile_mode="max-autotune",
                  ignore_eos=False, calibration_path=None, quantized_draft=None,
@@ -755,29 +1119,57 @@ def load_runtime(*, mode, target_checkpoint, draft_snapshot, tokenizer_path,
                  rowwise_lm_head=False, exact_small_chunk=None,
                  td_cache_basis=True, td_lazy_features=False,
                  td_unique_projection=False, td_basis_fold=False,
-                 fused_norm_quant=False):
+                 fused_norm_quant=False, benchmark_profile=None,
+                 td_proxy_profile=None):
     """Load a pinned local runtime without network access or checkpoint copies."""
     from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
     from e2e.model_registry import runtime_types
 
-    spec = Pard2Spec()
+    if mode not in ("ar", "pard2-ti", "pard2-td"):
+        raise ValueError("mode must be ar, pard2-ti, or pard2-td")
+    if td_proxy_profile is not None and mode != "pard2-td":
+        raise ValueError("--td-proxy-profile is valid only for pard2-td")
+
     config_cls, target_cls, _ = runtime_types(target_checkpoint, local_files_only=True)
     target_config = config_cls.from_pretrained(target_checkpoint, local_files_only=True,
                                                attn_implementation="flash_attention_2")
-    target = target_cls.from_pretrained(target_checkpoint, config=target_config,
-        torch_dtype=torch.float16, local_files_only=True).eval().to("cuda")
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, local_files_only=True)
-    draft = None
-    td_target_basis = None
+    draft_config = None
+    quantized_draft_config = None
     if mode != "ar":
+        if not draft_snapshot:
+            raise ValueError(f"{mode} requires a PARD2 draft snapshot")
         draft_config = AutoConfig.from_pretrained(draft_snapshot, local_files_only=True)
-        spec.validate(target_config, draft_config)
         if quantized_draft:
             draft_config_cls, draft_cls, _ = runtime_types(
                 quantized_draft, local_files_only=True)
             quantized_draft_config = draft_config_cls.from_pretrained(
                 quantized_draft, local_files_only=True,
                 attn_implementation="flash_attention_2")
+            _expect_config_fields(quantized_draft_config, {
+                "hidden_size": draft_config.hidden_size,
+                "intermediate_size": draft_config.intermediate_size,
+                "num_hidden_layers": draft_config.num_hidden_layers,
+                "num_attention_heads": draft_config.num_attention_heads,
+                "num_key_value_heads": draft_config.num_key_value_heads,
+                "vocab_size": draft_config.vocab_size,
+            }, "quantized PARD2 drafter")
+    spec, projection_state, td_target_basis = _preflight_pard2(
+        mode, target_config, draft_config, draft_snapshot=draft_snapshot,
+        benchmark_profile=benchmark_profile,
+        td_proxy_profile=td_proxy_profile)
+    calibration = (
+        torch.load(calibration_path, map_location="cpu", weights_only=True)
+        if mode == "pard2-td" and calibration_path else None)
+    tokenizer = AutoTokenizer.from_pretrained(
+        tokenizer_path, local_files_only=True)
+
+    # All cheap CPU contracts have passed before this 17+ GiB allocation.
+    target = target_cls.from_pretrained(
+        target_checkpoint, config=target_config, torch_dtype=torch.float16,
+        local_files_only=True).eval().to("cuda")
+    draft = None
+    if mode != "ar":
+        if quantized_draft:
             draft = draft_cls.from_pretrained(
                 quantized_draft, config=quantized_draft_config,
                 torch_dtype=torch.float16, local_files_only=True)
@@ -788,16 +1180,11 @@ def load_runtime(*, mode, target_checkpoint, draft_snapshot, tokenizer_path,
                 attn_implementation="eager")
             draft_dtype = torch.bfloat16
         if mode == "pard2-td":
-            td_target_basis = load_td_target_basis(target, tokenizer_path)
-            calibration = (torch.load(calibration_path, map_location="cpu", weights_only=True)
-                           if calibration_path else None)
+            if td_target_basis is None:
+                td_target_basis = load_td_target_basis(target, tokenizer_path)
             draft = TargetFeatEmbedWarp(draft, spec.target_dim, spec.projection_scale,
                                         bool(draft_config.pard2_proj_bias), calibration)
-            state = torch.load(Path(draft_snapshot)/"warp_model.bin",
-                               map_location="cpu", weights_only=True)
-            draft.target_proj.load_state_dict({
-                key.removeprefix("target_proj."): value for key, value in state.items()
-                if key.startswith("target_proj.")})
+            draft.target_proj.load_state_dict(projection_state)
             if td_basis_fold:
                 draft.fold_target_basis_(*td_target_basis)
         draft = draft.eval().to("cuda", dtype=draft_dtype)

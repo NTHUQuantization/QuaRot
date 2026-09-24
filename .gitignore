@@ -16,3 +16,25 @@ CMakeCache.txt
 Makefile
 docs/*
 scripts/*
+
+# Local checkpoints, profiler output, and experiment artifacts.
+__pycache__/
+.pytest_cache/
+.rocprofv3/
+**/build/
+*.pt
+*.bin
+*.safetensors
+*.pid
+/qwen3_14b_results/
+/qwen3_32b_results/
+/qwen3_ti_td_comparison/
+/batch_decode_validation_*/
+/benchmark_review_*/
+/m16_tile_audit_*/
+/original_quarot_comparison_*/
+/reasoning_vram_*/
+# Optional upstream checkout; runtime uses the pinned HF draft snapshots.
+/third-party/PARD/
+# This JSON is source configuration, not generated benchmark output.
+!/e2e/qwen3_32b_td_experiment_matrix.json

@@ -629,6 +629,15 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m
           "output: torch.Tensor(M x N, INT32, CUDA)\n"
           "output = int4Unpacking(A) @ int4Unpacking(B)^T",
           py::arg("A"), py::arg("B"));
+    m.def("selected_kernel_name", [](int64_t n) {
+        TORCH_CHECK(n > 0 && n <= UINT32_MAX, "N must fit uint32");
+        return std::string(selected_kernel_name(static_cast<uint32_t>(n)));
+    }, "Describe the row-packed INT4 GEMM dispatch", py::arg("N"));
+    m.def("selected_bpre_kernel_name", [](int64_t n) {
+        TORCH_CHECK(n > 0 && n <= UINT32_MAX, "N must fit uint32");
+        return std::string(
+            selected_bpre_kernel_name(static_cast<uint32_t>(n)));
+    }, "Describe the prepacked INT4 GEMM dispatch", py::arg("N"));
     m.def("prepack_b", &prepack_b, "Prepack a row-packed INT4 weight", py::arg("B"));
     m.def("matmul_bpre", &matmul_bpre, "INT4 GEMM with prepacked B",
           py::arg("A"), py::arg("BPre"), py::arg("N"), py::arg("K"));

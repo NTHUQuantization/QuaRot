@@ -9,12 +9,18 @@ from e2e.speculative import (
     GenerationResult,
     Pard2Spec,
     SelectedHiddenCollector,
+    TD_PROXY_QWEN3_14B_ON_QWEN3_32B,
     TargetFeatEmbedWarp,
     _ExactSmallChunkRows,
     _RowIndependentRMSNorm,
     _RowIndependentRMSNormQuant,
+    _basis_from_rotation_metadata,
+    _load_td_projection_state,
     _normalized_hadamard_cpu,
+    _preflight_pard2,
+    fold_td_projection_weight,
     greedy_accept,
+    load_td_target_basis,
 )
 from quarot.transformers.kv_cache import (
     CacheTransaction,
@@ -26,17 +32,163 @@ from e2e.pard2_calibrate import fit_affine
 from e2e.qualify_pard2 import validate_formal_payload
 
 
+def _draft_config(target_dim=16384):
+    return SimpleNamespace(
+        model_type="qwen3", hidden_size=1024, intermediate_size=3072,
+        num_hidden_layers=28, num_attention_heads=16,
+        num_key_value_heads=8, vocab_size=151936, pard_token=151670,
+        pard2_target_dim=target_dim,
+        pard2_target_layers=[-1, -8, -16, -24],
+        pard2_scale=0.02, pard2_proj_bias=False)
+
+
+def _target_config_8b():
+    return SimpleNamespace(
+        model_type="qwen3", hidden_size=4096, intermediate_size=12288,
+        num_hidden_layers=36, num_attention_heads=32,
+        num_key_value_heads=8, head_dim=128, vocab_size=151936)
+
+
+def _target_config_32b(*, with_basis=False):
+    revision = "9216db5781bf21249d130ec9da846c4624c16137"
+    values = dict(
+        model_type="qwen3_quarot", hidden_size=5120,
+        intermediate_size=25600, num_hidden_layers=64,
+        num_attention_heads=64, num_key_value_heads=8, head_dim=128,
+        vocab_size=151936,
+        tokenizer_name_or_path=(
+            f"/cache/models--Qwen--Qwen3-32B/snapshots/{revision}"))
+    if with_basis:
+        values.update(
+            quarot_rotation_format="hadk_v1",
+            quarot_rotation_width=5120,
+            quarot_rotation_remainder=40,
+            quarot_rotation_inner=128,
+            quarot_rotation_seed=0,
+            quarot_rotation_device="cuda",
+            quarot_rotation_dtype="float32",
+            quarot_rotation_signs=[1, -1] * 2560,
+            quarot_final_norm_weight=[1.0] * 5120)
+    return SimpleNamespace(**values)
+
+
 def test_pard2_pinned_config_contract():
     spec = Pard2Spec()
-    target = SimpleNamespace(model_type="qwen3", hidden_size=4096,
-        num_hidden_layers=36, vocab_size=151936)
-    draft = SimpleNamespace(vocab_size=151936, pard_token=151670,
-        pard2_target_dim=16384, pard2_target_layers=[-1, -8, -16, -24],
-        pard2_scale=0.02)
+    target = _target_config_8b()
+    draft = _draft_config()
     spec.validate(target, draft)
     draft.pard_token = 1
     with pytest.raises(ValueError, match="pard_token"):
         spec.validate(target, draft)
+
+
+def test_pard2_ti_accepts_qwen3_32b_without_loading_warp(monkeypatch):
+    def fail_load(*_args, **_kwargs):
+        raise AssertionError("TI must not load warp_model.bin")
+
+    monkeypatch.setattr(torch, "load", fail_load)
+    spec, projection, basis = _preflight_pard2(
+        "pard2-ti", _target_config_32b(), _draft_config(),
+        draft_snapshot="/does/not/exist")
+    assert spec.target_dim == 16384
+    assert projection is None
+    assert basis is None
+
+
+def test_pard2_td_32b_requires_explicit_proxy_profile():
+    with pytest.raises(ValueError, match="hidden_size must be 4096"):
+        Pard2Spec().validate(
+            _target_config_32b(), _draft_config(),
+            mode="pard2-td")
+
+
+def test_explicit_32b_profile_reports_target_identity_and_keeps_shared_ti_draft():
+    spec = Pard2Spec.for_benchmark_profile("qwen3_32b", mode="pard2-ti")
+    assert spec.target_model_id == "Qwen/Qwen3-32B"
+    assert spec.target_revision == "9216db5781bf21249d130ec9da846c4624c16137"
+    assert spec.model_id == "amd/PARD2-Qwen3-8B"
+    spec.validate(_target_config_32b(), _draft_config(), mode="pard2-ti")
+    with pytest.raises(ValueError, match="projection width"):
+        spec.validate(_target_config_32b(), _draft_config(), mode="pard2-td")
+
+
+def test_pard2_14b_on_32b_proxy_validates_pins_shapes_and_basis(
+        tmp_path, monkeypatch):
+    spec = Pard2Spec.for_proxy_profile(
+        TD_PROXY_QWEN3_14B_ON_QWEN3_32B)
+    snapshot = tmp_path / "snapshots" / spec.revision
+    snapshot.mkdir(parents=True)
+    (snapshot / "warp_model.bin").touch()
+    weight = torch.empty((1024, 20480), device="meta")
+    monkeypatch.setattr(
+        torch, "load", lambda *_args, **_kwargs: {
+            "target_proj.weight": weight})
+
+    actual, projection, basis = _preflight_pard2(
+        "pard2-td", _target_config_32b(with_basis=True),
+        _draft_config(target_dim=20480), draft_snapshot=snapshot,
+        td_proxy_profile=TD_PROXY_QWEN3_14B_ON_QWEN3_32B)
+
+    assert actual == spec
+    assert actual.target_alignment == "cross_target_proxy"
+    assert projection["weight"].shape == (1024, 20480)
+    assert basis[0].shape == basis[1].shape == (5120,)
+
+
+def test_pard2_proxy_rejects_unpinned_draft_snapshot():
+    spec = Pard2Spec.for_proxy_profile(
+        TD_PROXY_QWEN3_14B_ON_QWEN3_32B)
+    with pytest.raises(ValueError, match="pinned PARD2-Qwen3-14B"):
+        spec.validate(
+            _target_config_32b(with_basis=True),
+            _draft_config(target_dim=20480), mode="pard2-td",
+            draft_snapshot="/cache/snapshots/not-the-pinned-revision")
+
+
+def test_pard2_warp_shape_is_checked_before_model_load(tmp_path, monkeypatch):
+    spec = Pard2Spec.for_proxy_profile(
+        TD_PROXY_QWEN3_14B_ON_QWEN3_32B)
+    (tmp_path / "warp_model.bin").touch()
+    monkeypatch.setattr(
+        torch, "load", lambda *_args, **_kwargs: {
+            "target_proj.weight": torch.empty((1024, 16384))})
+    with pytest.raises(ValueError, match=r"shape \(1024, 20480\)"):
+        _load_td_projection_state(
+            tmp_path, spec, _draft_config(target_dim=20480))
+
+
+def test_rotation_metadata_is_self_contained_and_validated():
+    config = _target_config_32b(with_basis=True)
+    signs, norm = _basis_from_rotation_metadata(config)
+    assert signs.shape == norm.shape == (5120,)
+    target = SimpleNamespace(config=config)
+    loaded_signs, loaded_norm = load_td_target_basis(target, None)
+    torch.testing.assert_close(loaded_signs, signs)
+    torch.testing.assert_close(loaded_norm, norm)
+
+    config.quarot_rotation_remainder = 20
+    with pytest.raises(ValueError, match="factorization differs"):
+        _basis_from_rotation_metadata(config)
+
+
+def test_partial_rotation_metadata_fails_closed():
+    config = _target_config_32b()
+    config.quarot_rotation_format = "hadk_v1"
+    with pytest.raises(ValueError, match="incomplete QuaRot TD basis"):
+        _basis_from_rotation_metadata(config)
+
+
+def test_ar_and_speculative_modes_enforce_draft_ownership():
+    target = SimpleNamespace()
+    draft = SimpleNamespace()
+    with pytest.raises(ValueError, match="AR mode requires draft=None"):
+        FusedPardRuntime(
+            mode="ar", target=target, draft=draft, tokenizer=None,
+            compile_mode="eager")
+    with pytest.raises(ValueError, match="requires a PARD2 drafter"):
+        FusedPardRuntime(
+            mode="pard2-ti", target=target, draft=None, tokenizer=None,
+            compile_mode="eager")
 
 
 def test_compiled_drafter_allows_all_fixed_proposal_shapes(monkeypatch):
@@ -164,8 +316,9 @@ def test_packed_quantizer_passthrough_and_logical_shape():
 
 def test_runtime_close_removes_td_hooks_idempotently():
     target = _ToyRuntimeTarget(layers=36)
+    draft = SimpleNamespace(forward=lambda *_args, **_kwargs: None)
     runtime = FusedPardRuntime(
-        mode="pard2-td", target=target, draft=None, tokenizer=None,
+        mode="pard2-td", target=target, draft=draft, tokenizer=None,
         compile_mode="eager")
     tapped = [target.model.layers[index] for index in runtime.collector.indices]
     assert all(module._forward_hooks for module in tapped)
@@ -412,12 +565,34 @@ def test_unique_projection_matches_legacy_repeated_features():
     torch.testing.assert_close(optimized, legacy, atol=1e-6, rtol=1e-6)
 
 
-def test_fused_rotation_basis_round_trip():
-    source = torch.randn(8, 16)
-    signs = torch.tensor(([1, -1] * 8), dtype=torch.float32)
+@pytest.mark.parametrize("width", [16, 5120])
+def test_fused_rotation_basis_round_trip(width):
+    source = torch.randn(8, width)
+    signs = torch.tensor(
+        ([1, -1] * (width // 2)), dtype=torch.float32)
     rotated = _normalized_hadamard_cpu(source * signs)
-    restored = _normalized_hadamard_cpu(rotated) * signs
-    torch.testing.assert_close(restored, source, atol=1e-5, rtol=1e-5)
+    restored = _normalized_hadamard_cpu(rotated, transpose=True) * signs
+    torch.testing.assert_close(restored, source, atol=2e-5, rtol=2e-5)
+
+
+def test_generalized_td_projection_fold_matches_explicit_restoration():
+    torch.manual_seed(9)
+    hidden_size = 5120
+    source = [torch.randn(2, hidden_size) for _ in range(4)]
+    signs = torch.tensor([1, -1] * (hidden_size // 2), dtype=torch.float32)
+    gamma = torch.linspace(0.75, 1.25, hidden_size)
+    rotated = [
+        _normalized_hadamard_cpu(value * signs) for value in source]
+    weight = torch.randn(3, 4 * hidden_size)
+    folded = fold_td_projection_weight(
+        weight, signs, gamma, hidden_size)
+
+    expected_features = torch.cat(
+        [source[0] * gamma, *source[1:]], dim=-1)
+    actual_features = torch.cat(rotated, dim=-1)
+    expected = torch.nn.functional.linear(expected_features, weight)
+    actual = torch.nn.functional.linear(actual_features, folded)
+    torch.testing.assert_close(actual, expected, atol=2e-3, rtol=2e-4)
 
 
 def test_adaptive_k_and_metrics():

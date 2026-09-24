@@ -11,7 +11,7 @@ import torch
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from e2e.speculative import Pard2Spec, load_runtime
+from e2e.speculative import PARD2_PROFILES, Pard2Spec, load_runtime
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -20,7 +20,8 @@ DEFAULT_DRAFT = ROOT / ".hf_cache/pard/hub/models--amd--PARD2-Qwen3-8B/snapshots
 DEFAULT_TOKENIZER = ROOT / ".hf_cache/pard/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218"
 
 
-def verify_local_resources(draft=DEFAULT_DRAFT):
+def verify_local_resources(draft=DEFAULT_DRAFT, benchmark_profile=None,
+                           mode=None):
     required = {
         "config.json": 1,
         "model.safetensors": 1_000_000_000,
@@ -32,19 +33,20 @@ def verify_local_resources(draft=DEFAULT_DRAFT):
         if not path.is_file() or path.stat().st_size < minimum:
             failures.append(str(path))
     if failures:
-        spec = Pard2Spec()
+        spec = Pard2Spec.for_benchmark_profile(
+            benchmark_profile, mode=mode)
         raise FileNotFoundError(
             "pinned PARD2-Qwen3 cache is incomplete; run only this missing-file download:\n"
             f"hf download {spec.model_id} --revision {spec.revision}\n"
             + "\n".join(failures))
 
 
-def verify_target_checkpoint(target):
+def verify_target_checkpoint(target, benchmark_profile=None):
     path = Path(target)
     if not (path / "config.json").is_file():
-        spec = Pard2Spec()
+        spec = Pard2Spec.for_benchmark_profile(benchmark_profile)
         raise FileNotFoundError(
-            f"missing fused Qwen3-8B W4A4KV4 target: {path}\n"
+            f"missing fused {spec.target_model_id} W4A4KV4 target: {path}\n"
             "Create it from the locally pinned BF16 source "
             f"{spec.target_model_id}@{spec.target_revision} with "
             "e2e/checkpoint_utils/quantize_checkpoint.py.")
@@ -56,6 +58,8 @@ def parser():
     result.add_argument("--target", default=str(DEFAULT_TARGET))
     result.add_argument("--draft", default=str(DEFAULT_DRAFT))
     result.add_argument("--tokenizer", default=str(DEFAULT_TOKENIZER))
+    result.add_argument("--benchmark-profile", choices=PARD2_PROFILES,
+                        default="qwen3_8b")
     result.add_argument("--prompt", default="Explain speculative decoding in one paragraph.")
     result.add_argument("--max-new-tokens", type=int, default=256)
     result.add_argument("--max-cache-len", type=int, default=4096)
@@ -101,9 +105,9 @@ def parser():
 
 def main(argv=None):
     args = parser().parse_args(argv)
-    verify_target_checkpoint(args.target)
+    verify_target_checkpoint(args.target, args.benchmark_profile)
     if args.mode != "ar":
-        verify_local_resources(args.draft)
+        verify_local_resources(args.draft, args.benchmark_profile, args.mode)
     runtime = load_runtime(mode=args.mode, target_checkpoint=args.target,
         draft_snapshot=args.draft, tokenizer_path=args.tokenizer,
         max_cache_len=args.max_cache_len, page_size=args.page_size,
@@ -118,7 +122,8 @@ def main(argv=None):
         td_lazy_features=args.td_lazy_features,
         td_unique_projection=args.td_unique_projection,
         td_basis_fold=args.td_basis_fold,
-        fused_norm_quant=args.fused_norm_quant)
+        fused_norm_quant=args.fused_norm_quant,
+        benchmark_profile=args.benchmark_profile)
     messages = [{"role": "system", "content": "You are a helpful assistant."},
                 {"role": "user", "content": args.prompt}]
     if getattr(runtime.tokenizer, "chat_template", None):
