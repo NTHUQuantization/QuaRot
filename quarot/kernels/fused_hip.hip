@@ -182,31 +182,72 @@ __global__ void fused_rmsnorm_quant_i4_kernel(
   }
 }
 
-// Adapted from third-party/hadacore's HIP N=32/64 small-warp path.
-// gfx12 executes wave32; keeping the transform in registers removes the six
-// workgroup-wide barriers and repeated LDS traffic of the scalar butterfly.
+// Adapted from third-party/hadacore's wave-register path. gfx12 executes
+// wave32: H32 is computed with shuffles, while H64/H128/H256 keep 2/4/8
+// values per lane and finish the remaining butterfly stages in registers.
 __device__ __forceinline__ float hadacore_shfl_xor_f32(float value, int mask) {
   return __shfl_xor_sync(0xffffffffULL, value, mask, 32);
 }
 
 template <int Regs>
 __device__ __forceinline__ void hadacore_warp_hadamard_regs(
-    float values[2], int lane) {
+    float* values, int lane) {
   for (int mask = 1; mask < 32; mask <<= 1) {
 #pragma unroll
-    for (int r = 0; r < 2; ++r) {
-      if (r < Regs) {
-        const float a = values[r];
-        const float b = hadacore_shfl_xor_f32(a, mask);
-        values[r] = (lane & mask) == 0 ? a + b : b - a;
+    for (int r = 0; r < Regs; ++r) {
+      const float a = values[r];
+      const float b = hadacore_shfl_xor_f32(a, mask);
+      values[r] = (lane & mask) == 0 ? a + b : b - a;
+    }
+  }
+
+  // The wave shuffle computes H32 for every register column. Complete H64,
+  // H128, or H256 by applying the remaining butterfly stages locally across
+  // the 2, 4, or 8 values owned by each lane.
+#pragma unroll
+  for (int stride = 1; stride < Regs; stride <<= 1) {
+#pragma unroll
+    for (int base = 0; base < Regs; base += stride << 1) {
+#pragma unroll
+      for (int offset = 0; offset < stride; ++offset) {
+        const float a = values[base + offset];
+        const float b = values[base + offset + stride];
+        values[base + offset] = a + b;
+        values[base + offset + stride] = a - b;
       }
     }
   }
-  if (Regs == 2) {
-    const float a = values[0];
-    const float b = values[1];
-    values[0] = a + b;
-    values[1] = a - b;
+}
+
+__device__ __forceinline__ float hadacore_warp_reduce_max(float value) {
+  for (int mask = 16; mask > 0; mask >>= 1) {
+    value = fmaxf(value, hadacore_shfl_xor_f32(value, mask));
+  }
+  return value;
+}
+
+__device__ __forceinline__ float hadacore_warp_reduce_min(float value) {
+  for (int mask = 16; mask > 0; mask >>= 1) {
+    value = fminf(value, hadacore_shfl_xor_f32(value, mask));
+  }
+  return value;
+}
+
+template <int Inner>
+__device__ __forceinline__ void hadacore_warp_hadamard_group(
+    float* values, int group, int lane) {
+  static_assert(Inner >= 32 && Inner <= 256 && (Inner & (Inner - 1)) == 0,
+                "warp Hadamard supports H32 through H256");
+  constexpr int kRegs = Inner / 32;
+  float registers[kRegs];
+#pragma unroll
+  for (int r = 0; r < kRegs; ++r) {
+    registers[r] = values[group * Inner + r * 32 + lane];
+  }
+  hadacore_warp_hadamard_regs<kRegs>(registers, lane);
+#pragma unroll
+  for (int r = 0; r < kRegs; ++r) {
+    values[group * Inner + r * 32 + lane] = registers[r];
   }
 }
 
@@ -266,15 +307,15 @@ __global__ void fused_append_kv_i4_kernel(
     const int32_t* kv_indptr, const int32_t* kv_indices,
     const int32_t* last_page_offset, int num_layers, int layer_idx,
     int num_heads, int page_size, int batch_size, int added_length) {
-  __shared__ float k_values[HeadDim];
-  __shared__ float v_values[HeadDim];
-  __shared__ float scratch[HeadDim];
-  const int tid = threadIdx.x;
+  static_assert(HeadDim == 64 || HeadDim == 128,
+                "fused KV append supports head dimensions 64 and 128");
+  constexpr int kRegs = HeadDim / 32;
+  const int lane = threadIdx.x;
   const int row = blockIdx.x;
   const int batch = row / added_length;
   const int token = row - batch * added_length;
   const int head = blockIdx.y;
-  if (batch >= batch_size || head >= num_heads || tid >= HeadDim) return;
+  if (batch >= batch_size || head >= num_heads) return;
 
   const int seq_len = (kv_indptr[batch + 1] - kv_indptr[batch] - 1) * page_size + last_page_offset[batch];
   const int position = seq_len - added_length + token;
@@ -282,51 +323,83 @@ __global__ void fused_append_kv_i4_kernel(
   const int page =
       kv_indices[kv_indptr[batch] + position / page_size];
   const int slot = position % page_size;
-  const int input = (row * num_heads + head) * HeadDim + tid;
-  k_values[tid] = __half2float(key[input]);
-  v_values[tid] = __half2float(value[input]);
-  __syncthreads();
+  const int input_base = (row * num_heads + head) * HeadDim;
+  float k_values[kRegs];
+  float v_values[kRegs];
+#pragma unroll
+  for (int r = 0; r < kRegs; ++r) {
+    const int i = r * 32 + lane;
+    k_values[r] = __half2float(key[input_base + i]);
+    v_values[r] = __half2float(value[input_base + i]);
+  }
 
-  hadamard(k_values, HeadDim);
-  float kx = k_values[tid] * rsqrtf(float(HeadDim));
-  k_values[tid] = kx;
-  float kmax = reduce_max(kx, scratch);
-  __syncthreads();
-  float kmin = -reduce_max(-kx, scratch);
+  hadacore_warp_hadamard_regs<kRegs>(k_values, lane);
+  const float norm = rsqrtf(float(HeadDim));
+  float kmax = -INFINITY;
+  float kmin = INFINITY;
+#pragma unroll
+  for (int r = 0; r < kRegs; ++r) {
+    k_values[r] *= norm;
+    kmax = fmaxf(kmax, k_values[r]);
+    kmin = fminf(kmin, k_values[r]);
+  }
+  kmax = hadacore_warp_reduce_max(kmax);
+  kmin = hadacore_warp_reduce_min(kmin);
   half kscale_h = __float2half(fmaxf((kmax - kmin) / 15.0f, 1.0e-5f));
   half kzero_h = __float2half(-kmin);
   float kscale = __half2float(kscale_h);
   float kzero = __half2float(kzero_h);
-  if ((tid & 1) == 0) {
-    int q0 = max(0, min(15, static_cast<int>(nearbyintf((k_values[tid] + kzero) / kscale))));
-    int q1 = max(0, min(15, static_cast<int>(nearbyintf((k_values[tid + 1] + kzero) / kscale))));
-    size_t index = (((static_cast<size_t>(page) * num_layers + layer_idx) * 2 * num_heads + head) * page_size + slot) * (HeadDim / 2) + (tid >> 1);
-    kv_data[index] = pack_u4_pair(q0, q1);
+  const size_t k_data_base =
+      (((static_cast<size_t>(page) * num_layers + layer_idx) * 2 *
+        num_heads + head) * page_size + slot) * (HeadDim / 2);
+#pragma unroll
+  for (int r = 0; r < kRegs; ++r) {
+    const float neighbor = hadacore_shfl_xor_f32(k_values[r], 1);
+    if ((lane & 1) == 0) {
+      const int q0 = max(0, min(15, static_cast<int>(
+          nearbyintf((k_values[r] + kzero) / kscale))));
+      const int q1 = max(0, min(15, static_cast<int>(
+          nearbyintf((neighbor + kzero) / kscale))));
+      kv_data[k_data_base + ((r * 32 + lane) >> 1)] =
+          pack_u4_pair(q0, q1);
+    }
   }
-  if (tid == 0) {
+  if (lane == 0) {
     size_t index = ((static_cast<size_t>(page) * num_layers + layer_idx) * 2 * num_heads + head) * page_size + slot;
     kv_param[index] = __halves2half2(kscale_h, kzero_h);
   }
-  __syncthreads();
 
   // QuaRot rotates Q/K inside each attention head, but V remains in its
   // original basis. This must match the prefill/chunk asym-quant path.
-  float vx = v_values[tid];
-  v_values[tid] = vx;
-  float vmax = reduce_max(vx, scratch);
-  __syncthreads();
-  float vmin = -reduce_max(-vx, scratch);
+  float vmax = -INFINITY;
+  float vmin = INFINITY;
+#pragma unroll
+  for (int r = 0; r < kRegs; ++r) {
+    vmax = fmaxf(vmax, v_values[r]);
+    vmin = fminf(vmin, v_values[r]);
+  }
+  vmax = hadacore_warp_reduce_max(vmax);
+  vmin = hadacore_warp_reduce_min(vmin);
   half vscale_h = __float2half(fmaxf((vmax - vmin) / 15.0f, 1.0e-5f));
   half vzero_h = __float2half(-vmin);
   float vscale = __half2float(vscale_h);
   float vzero = __half2float(vzero_h);
-  if ((tid & 1) == 0) {
-    int q0 = max(0, min(15, static_cast<int>(nearbyintf((v_values[tid] + vzero) / vscale))));
-    int q1 = max(0, min(15, static_cast<int>(nearbyintf((v_values[tid + 1] + vzero) / vscale))));
-    size_t index = ((((static_cast<size_t>(page) * num_layers + layer_idx) * 2 + 1) * num_heads + head) * page_size + slot) * (HeadDim / 2) + (tid >> 1);
-    kv_data[index] = pack_u4_pair(q0, q1);
+  const size_t v_data_base =
+      ((((static_cast<size_t>(page) * num_layers + layer_idx) * 2 + 1) *
+        num_heads + head) * page_size + slot) * (HeadDim / 2);
+#pragma unroll
+  for (int r = 0; r < kRegs; ++r) {
+    const float neighbor = hadacore_shfl_xor_f32(v_values[r], 1);
+    if ((lane & 1) == 0) {
+      const int q0 = max(0, min(15, static_cast<int>(
+          nearbyintf((v_values[r] + vzero) / vscale))));
+      const int q1 = max(0, min(15, static_cast<int>(
+          nearbyintf((neighbor + vzero) / vscale))));
+      kv_data[v_data_base + ((r * 32 + lane) >> 1)] =
+          pack_u4_pair(q0, q1);
+    }
   }
-  if (tid == 0) {
+  if (lane == 0) {
     size_t index = (((static_cast<size_t>(page) * num_layers + layer_idx) * 2 + 1) * num_heads + head) * page_size + slot;
     kv_param[index] = __halves2half2(vscale_h, vzero_h);
   }
@@ -340,23 +413,27 @@ __global__ void fused_rope_append_kv_i4_kernel(
     const int32_t* kv_indptr, const int32_t* kv_indices,
     const int32_t* last_page_offset, int num_layers, int layer_idx,
     int num_query_heads, int num_kv_heads, int page_size, int batch_size) {
-  __shared__ float k_values[HeadDim];
-  __shared__ float v_values[HeadDim];
-  __shared__ float scratch[HeadDim];
-  const int tid = threadIdx.x;
+  static_assert(HeadDim == 64 || HeadDim == 128,
+                "fused RoPE/KV append supports head dimensions 64 and 128");
+  constexpr int kRegs = HeadDim / 32;
+  const int lane = threadIdx.x;
   const int batch = blockIdx.x;
   const int head = blockIdx.y;
-  if (batch >= batch_size || head >= num_query_heads || tid >= HeadDim) return;
+  if (batch >= batch_size || head >= num_query_heads) return;
 
   const int half_dim = HeadDim / 2;
-  const int partner = tid < half_dim ? tid + half_dim : tid - half_dim;
-  const int trig = batch * HeadDim + tid;
   const int q_base = (batch * num_query_heads + head) * HeadDim;
-  const half q = query[q_base + tid];
-  const half qr = tid < half_dim ? __hneg(query[q_base + partner])
+#pragma unroll
+  for (int r = 0; r < kRegs; ++r) {
+    const int i = r * 32 + lane;
+    const int partner = i < half_dim ? i + half_dim : i - half_dim;
+    const int trig = batch * HeadDim + i;
+    const half q = query[q_base + i];
+    const half qr = i < half_dim ? __hneg(query[q_base + partner])
                                  : query[q_base + partner];
-  query_out[q_base + tid] = __hadd(
-      __hmul(q, cos[trig]), __hmul(qr, sin[trig]));
+    query_out[q_base + i] = __hadd(
+        __hmul(q, cos[trig]), __hmul(qr, sin[trig]));
+  }
 
   // Only the first num_kv_heads blocks own K/V cache entries. This branch is
   // uniform across the block, so blocks for the remaining GQA query heads can
@@ -371,69 +448,93 @@ __global__ void fused_rope_append_kv_i4_kernel(
       kv_indices[kv_indptr[batch] + (seq_len - 1) / page_size];
   const int slot = (seq_len - 1) % page_size;
   const int kv_base = (batch * num_kv_heads + head) * HeadDim;
-  const half k = key[kv_base + tid];
-  const half kr = tid < half_dim ? __hneg(key[kv_base + partner])
+  float k_values[kRegs];
+  float v_values[kRegs];
+#pragma unroll
+  for (int r = 0; r < kRegs; ++r) {
+    const int i = r * 32 + lane;
+    const int partner = i < half_dim ? i + half_dim : i - half_dim;
+    const int trig = batch * HeadDim + i;
+    const half k = key[kv_base + i];
+    const half kr = i < half_dim ? __hneg(key[kv_base + partner])
                                  : key[kv_base + partner];
-  // Preserve the old two-kernel numerical boundary: round RoPE output to FP16
-  // before converting to FP32 for the Hadamard and cache quantization.
-  const half rotated_k = __hadd(
-      __hmul(k, cos[trig]), __hmul(kr, sin[trig]));
-  k_values[tid] = __half2float(rotated_k);
-  v_values[tid] = __half2float(value[kv_base + tid]);
-  __syncthreads();
+    // Preserve the old two-kernel numerical boundary: round RoPE output to
+    // FP16 before converting to FP32 for Hadamard and cache quantization.
+    const half rotated_k = __hadd(
+        __hmul(k, cos[trig]), __hmul(kr, sin[trig]));
+    k_values[r] = __half2float(rotated_k);
+    v_values[r] = __half2float(value[kv_base + i]);
+  }
 
-  hadamard(k_values, HeadDim);
-  const float kx = k_values[tid] * rsqrtf(float(HeadDim));
-  k_values[tid] = kx;
-  const float kmax = reduce_max(kx, scratch);
-  __syncthreads();
-  const float kmin = -reduce_max(-kx, scratch);
+  hadacore_warp_hadamard_regs<kRegs>(k_values, lane);
+  const float norm = rsqrtf(float(HeadDim));
+  float kmax = -INFINITY;
+  float kmin = INFINITY;
+#pragma unroll
+  for (int r = 0; r < kRegs; ++r) {
+    k_values[r] *= norm;
+    kmax = fmaxf(kmax, k_values[r]);
+    kmin = fminf(kmin, k_values[r]);
+  }
+  kmax = hadacore_warp_reduce_max(kmax);
+  kmin = hadacore_warp_reduce_min(kmin);
   const half kscale_h =
       __float2half(fmaxf((kmax - kmin) / 15.0f, 1.0e-5f));
   const half kzero_h = __float2half(-kmin);
   const float kscale = __half2float(kscale_h);
   const float kzero = __half2float(kzero_h);
-  if ((tid & 1) == 0) {
-    const int q0 = max(0, min(15, static_cast<int>(
-        nearbyintf((k_values[tid] + kzero) / kscale))));
-    const int q1 = max(0, min(15, static_cast<int>(
-        nearbyintf((k_values[tid + 1] + kzero) / kscale))));
-    const size_t index =
-        (((static_cast<size_t>(page) * num_layers + layer_idx) * 2 *
-           num_kv_heads + head) * page_size + slot) *
-        (HeadDim / 2) + (tid >> 1);
-    kv_data[index] = pack_u4_pair(q0, q1);
+  const size_t k_data_base =
+      (((static_cast<size_t>(page) * num_layers + layer_idx) * 2 *
+        num_kv_heads + head) * page_size + slot) * (HeadDim / 2);
+#pragma unroll
+  for (int r = 0; r < kRegs; ++r) {
+    const float neighbor = hadacore_shfl_xor_f32(k_values[r], 1);
+    if ((lane & 1) == 0) {
+      const int q0 = max(0, min(15, static_cast<int>(
+          nearbyintf((k_values[r] + kzero) / kscale))));
+      const int q1 = max(0, min(15, static_cast<int>(
+          nearbyintf((neighbor + kzero) / kscale))));
+      kv_data[k_data_base + ((r * 32 + lane) >> 1)] =
+          pack_u4_pair(q0, q1);
+    }
   }
-  if (tid == 0) {
+  if (lane == 0) {
     const size_t index =
         ((static_cast<size_t>(page) * num_layers + layer_idx) * 2 *
          num_kv_heads + head) * page_size + slot;
     kv_param[index] = __halves2half2(kscale_h, kzero_h);
   }
-  __syncthreads();
 
-  const float vx = v_values[tid];
-  v_values[tid] = vx;
-  const float vmax = reduce_max(vx, scratch);
-  __syncthreads();
-  const float vmin = -reduce_max(-vx, scratch);
+  float vmax = -INFINITY;
+  float vmin = INFINITY;
+#pragma unroll
+  for (int r = 0; r < kRegs; ++r) {
+    vmax = fmaxf(vmax, v_values[r]);
+    vmin = fminf(vmin, v_values[r]);
+  }
+  vmax = hadacore_warp_reduce_max(vmax);
+  vmin = hadacore_warp_reduce_min(vmin);
   const half vscale_h =
       __float2half(fmaxf((vmax - vmin) / 15.0f, 1.0e-5f));
   const half vzero_h = __float2half(-vmin);
   const float vscale = __half2float(vscale_h);
   const float vzero = __half2float(vzero_h);
-  if ((tid & 1) == 0) {
-    const int q0 = max(0, min(15, static_cast<int>(
-        nearbyintf((v_values[tid] + vzero) / vscale))));
-    const int q1 = max(0, min(15, static_cast<int>(
-        nearbyintf((v_values[tid + 1] + vzero) / vscale))));
-    const size_t index =
-        ((((static_cast<size_t>(page) * num_layers + layer_idx) * 2 + 1) *
-           num_kv_heads + head) * page_size + slot) *
-        (HeadDim / 2) + (tid >> 1);
-    kv_data[index] = pack_u4_pair(q0, q1);
+  const size_t v_data_base =
+      ((((static_cast<size_t>(page) * num_layers + layer_idx) * 2 + 1) *
+        num_kv_heads + head) * page_size + slot) * (HeadDim / 2);
+#pragma unroll
+  for (int r = 0; r < kRegs; ++r) {
+    const float neighbor = hadacore_shfl_xor_f32(v_values[r], 1);
+    if ((lane & 1) == 0) {
+      const int q0 = max(0, min(15, static_cast<int>(
+          nearbyintf((v_values[r] + vzero) / vscale))));
+      const int q1 = max(0, min(15, static_cast<int>(
+          nearbyintf((neighbor + vzero) / vscale))));
+      kv_data[v_data_base + ((r * 32 + lane) >> 1)] =
+          pack_u4_pair(q0, q1);
+    }
   }
-  if (tid == 0) {
+  if (lane == 0) {
     const size_t index =
         (((static_cast<size_t>(page) * num_layers + layer_idx) * 2 + 1) *
          num_kv_heads + head) * page_size + slot;
@@ -449,28 +550,34 @@ __global__ void fused_attention_hadamard_quant_kernel(
   const int row = blockIdx.x;
   const int width = num_heads * head_dim;
   if (row >= rows) return;
-  if (num_heads == 32 || num_heads == 64) {
+  if (num_heads == 32 || num_heads == 64 ||
+      num_heads == 128 || num_heads == 256) {
     const int lane = threadIdx.x & 31;
     const int wave = threadIdx.x >> 5;
     const int waves = blockDim.x >> 5;
     const int regs = num_heads >> 5;
     for (int d = wave; d < head_dim; d += waves) {
-      float registers[2] = {0.0f, 0.0f};
+      float registers[8] = {0.0f, 0.0f, 0.0f, 0.0f,
+                            0.0f, 0.0f, 0.0f, 0.0f};
 #pragma unroll
-      for (int r = 0; r < 2; ++r) {
+      for (int r = 0; r < 8; ++r) {
         if (r < regs) {
           const int h = r * 32 + lane;
           registers[r] = __half2float(
               attention[(row * num_heads + h) * head_dim + d]);
         }
       }
-      if (regs == 1) {
+      if (num_heads == 32) {
         hadacore_warp_hadamard_regs<1>(registers, lane);
-      } else {
+      } else if (num_heads == 64) {
         hadacore_warp_hadamard_regs<2>(registers, lane);
+      } else if (num_heads == 128) {
+        hadacore_warp_hadamard_regs<4>(registers, lane);
+      } else {
+        hadacore_warp_hadamard_regs<8>(registers, lane);
       }
 #pragma unroll
-      for (int r = 0; r < 2; ++r) {
+      for (int r = 0; r < 8; ++r) {
         if (r < regs) values[d * num_heads + r * 32 + lane] = registers[r];
       }
     }
@@ -651,6 +758,96 @@ __global__ void fused_ffn_silu_hadamard_quant_hadacore256_kernel(
   }
 }
 
+// One wave owns one H256 group. Each lane keeps eight strided values in
+// registers: wave shuffles compute the H32 component and local butterflies
+// finish H8 across the registers. No LDS transpose or workgroup barrier is
+// needed for the transform or scale reduction.
+__global__ void fused_ffn_silu_hadamard_quant_warp256_kernel(
+    const half* gate, const half* up, uint8_t* packed, half* scales,
+    int rows, int width) {
+  constexpr int kRegs = 8;
+  const int lane = threadIdx.x;
+  const int row = blockIdx.x;
+  const int group = blockIdx.y;
+  const int base = row * width + group * 256;
+  float values[kRegs];
+#pragma unroll
+  for (int r = 0; r < kRegs; ++r) {
+    const int i = r * 32 + lane;
+    values[r] = silu(__half2float(gate[base + i])) *
+                __half2float(up[base + i]);
+  }
+  hadacore_warp_hadamard_regs<kRegs>(values, lane);
+
+  constexpr float kNorm = 0.0625f;
+  float local_max = 0.0f;
+#pragma unroll
+  for (int r = 0; r < kRegs; ++r) {
+    values[r] *= kNorm;
+    local_max = fmaxf(local_max, fabsf(values[r]));
+  }
+  const float scale = fmaxf(
+      hadacore_warp_reduce_max(local_max) / 7.0f, 6.103515625e-5f);
+  if (lane == 0) {
+    scales[row * gridDim.y + group] = __float2half(scale);
+  }
+#pragma unroll
+  for (int r = 0; r < kRegs; ++r) {
+    const float neighbor = hadacore_shfl_xor_f32(values[r], 1);
+    if ((lane & 1) == 0) {
+      const int q0 = max(-8, min(7, static_cast<int>(
+          nearbyintf(values[r] / scale))));
+      const int q1 = max(-8, min(7, static_cast<int>(
+          nearbyintf(neighbor / scale))));
+      packed[(base + r * 32 + lane) >> 1] = pack_s4_pair(q0, q1);
+    }
+  }
+}
+
+template <int Width>
+__global__ void fused_ffn_silu_hadamard_quant_warp_kernel(
+    const half* gate, const half* up, uint8_t* packed, half* scales,
+    int rows) {
+  static_assert(Width >= 32 && Width <= 256 && (Width & (Width - 1)) == 0,
+                "warp FFN kernel supports H32 through H256");
+  constexpr int kRegs = Width / 32;
+  const int lane = threadIdx.x;
+  const int row = blockIdx.x;
+  if (row >= rows) return;
+  const int base = row * Width;
+  float values[kRegs];
+#pragma unroll
+  for (int r = 0; r < kRegs; ++r) {
+    const int i = r * 32 + lane;
+    values[r] = silu(__half2float(gate[base + i])) *
+                __half2float(up[base + i]);
+  }
+  hadacore_warp_hadamard_regs<kRegs>(values, lane);
+
+  const float norm = rsqrtf(float(Width));
+  float local_max = 0.0f;
+#pragma unroll
+  for (int r = 0; r < kRegs; ++r) {
+    values[r] *= norm;
+    local_max = fmaxf(local_max, fabsf(values[r]));
+  }
+  const half scale_h = __float2half(fmaxf(
+      hadacore_warp_reduce_max(local_max) / 7.0f, 6.103515625e-5f));
+  const float scale = __half2float(scale_h);
+  if (lane == 0) scales[row] = scale_h;
+#pragma unroll
+  for (int r = 0; r < kRegs; ++r) {
+    const float neighbor = hadacore_shfl_xor_f32(values[r], 1);
+    if ((lane & 1) == 0) {
+      const int q0 = max(-8, min(7, static_cast<int>(
+          nearbyintf(values[r] / scale))));
+      const int q1 = max(-8, min(7, static_cast<int>(
+          nearbyintf(neighbor / scale))));
+      packed[(base + r * 32 + lane) >> 1] = pack_s4_pair(q0, q1);
+    }
+  }
+}
+
 __global__ void fused_ffn_silu_hadamard_quant_kernel(
     const half* gate, const half* up, uint8_t* packed, half* scales,
     int rows, int width) {
@@ -693,25 +890,22 @@ __global__ void fused_ffn_silu_hadamard_quant_general_kernel(
   }
   __syncthreads();
 
-  if (inner == 32 || inner == 64) {
+  if (inner == 32 || inner == 64 || inner == 128 || inner == 256) {
     const int lane = threadIdx.x & 31;
     const int wave = threadIdx.x >> 5;
     const int waves = blockDim.x >> 5;
     for (int group = wave; group < remainder; group += waves) {
-      const int regs = inner >> 5;
-      float registers[2] = {values[group * inner + lane], 0.0f};
-      if (regs == 2) registers[1] = values[group * inner + 32 + lane];
       if (inner == 32) {
-        hadacore_warp_hadamard_regs<1>(registers, lane);
+        hadacore_warp_hadamard_group<32>(values, group, lane);
+      } else if (inner == 64) {
+        hadacore_warp_hadamard_group<64>(values, group, lane);
+      } else if (inner == 128) {
+        hadacore_warp_hadamard_group<128>(values, group, lane);
       } else {
-        hadacore_warp_hadamard_regs<2>(registers, lane);
+        hadacore_warp_hadamard_group<256>(values, group, lane);
       }
-      values[group * inner + lane] = registers[0];
-      if (regs == 2) values[group * inner + 32 + lane] = registers[1];
     }
     __syncthreads();
-  } else if (inner == 128) {
-    hadamard_grouped_fixed<128>(values, width);
   } else if (inner == 512) {
     hadamard_grouped_fixed<512>(values, width);
   } else if (inner == 1024) {
@@ -795,6 +989,32 @@ __global__ void fused_ffn_general_inner_fixed_kernel(
   hadamard_fixed<Inner>(values);
   for (int i = threadIdx.x; i < inner; i += blockDim.x) {
     workspace[base + i] = values[i];
+  }
+}
+
+template <int Inner>
+__global__ void fused_ffn_general_inner_warp_kernel(
+    const half* gate, const half* up, float* workspace, int rows, int width,
+    int remainder) {
+  static_assert(Inner >= 32 && Inner <= 256 && (Inner & (Inner - 1)) == 0,
+                "warp inner kernel supports H32 through H256");
+  constexpr int kRegs = Inner / 32;
+  const int lane = threadIdx.x;
+  const int row = blockIdx.x;
+  const int group = blockIdx.y;
+  if (row >= rows || group >= remainder) return;
+  const int base = row * width + group * Inner;
+  float values[kRegs];
+#pragma unroll
+  for (int r = 0; r < kRegs; ++r) {
+    const int i = r * 32 + lane;
+    values[r] = silu(__half2float(gate[base + i])) *
+                __half2float(up[base + i]);
+  }
+  hadacore_warp_hadamard_regs<kRegs>(values, lane);
+#pragma unroll
+  for (int r = 0; r < kRegs; ++r) {
+    workspace[base + r * 32 + lane] = values[r];
   }
 }
 
@@ -920,15 +1140,46 @@ __global__ void fused_ffn_silu_hadamard_quant_single_fp16lds_kernel(
   // Each group is independent. FP32 butterfly scratch prevents per-stage FP16
   // rounding while the complete row remains compact in FP16 LDS.
   for (int group = 0; group < remainder; ++group) {
-    for (int p = tid; p < inner; p += blockDim.x) {
-      inner_values[p] = __half2float(values[group * inner + p]);
+    if (inner == 32 || inner == 64 || inner == 128 || inner == 256) {
+      if (tid < 32) {
+        float registers[8];
+        const int regs = inner / 32;
+#pragma unroll
+        for (int r = 0; r < 8; ++r) {
+          if (r < regs) {
+            registers[r] = __half2float(
+                values[group * inner + r * 32 + tid]);
+          }
+        }
+        if (inner == 32) {
+          hadacore_warp_hadamard_regs<1>(registers, tid);
+        } else if (inner == 64) {
+          hadacore_warp_hadamard_regs<2>(registers, tid);
+        } else if (inner == 128) {
+          hadacore_warp_hadamard_regs<4>(registers, tid);
+        } else {
+          hadacore_warp_hadamard_regs<8>(registers, tid);
+        }
+#pragma unroll
+        for (int r = 0; r < 8; ++r) {
+          if (r < regs) {
+            values[group * inner + r * 32 + tid] =
+                __float2half(registers[r]);
+          }
+        }
+      }
+      __syncthreads();
+    } else {
+      for (int p = tid; p < inner; p += blockDim.x) {
+        inner_values[p] = __half2float(values[group * inner + p]);
+      }
+      __syncthreads();
+      hadamard(inner_values, inner);
+      for (int p = tid; p < inner; p += blockDim.x) {
+        values[group * inner + p] = __float2half(inner_values[p]);
+      }
+      __syncthreads();
     }
-    __syncthreads();
-    hadamard(inner_values, inner);
-    for (int p = tid; p < inner; p += blockDim.x) {
-      values[group * inner + p] = __float2half(inner_values[p]);
-    }
-    __syncthreads();
   }
 
   const int lane = tid & 31;
@@ -1148,7 +1399,7 @@ void fused_append_kv_i4(
   at::hip::HIPGuard guard{static_cast<char>(key.get_device())};
 #define LAUNCH_FUSED_APPEND(HEAD_DIM) hipLaunchKernelGGL(\
       (fused_append_kv_i4_kernel<HEAD_DIM>), dim3(batch_size * added_length, num_heads), \
-      dim3(HEAD_DIM), 0, at::hip::getCurrentHIPStream().stream(), \
+      dim3(32), 0, at::hip::getCurrentHIPStream().stream(), \
       reinterpret_cast<const half*>(key.data_ptr<at::Half>()), \
       reinterpret_cast<const half*>(value.data_ptr<at::Half>()), \
       kv_data.data_ptr<uint8_t>(), reinterpret_cast<half2*>(kv_param.data_ptr<at::Half>()), \
@@ -1214,7 +1465,7 @@ torch::Tensor fused_rope_append_kv_i4(
   auto query_out = torch::empty_like(query);
 #define LAUNCH_FUSED_K1(HEAD_DIM) hipLaunchKernelGGL(\
       (fused_rope_append_kv_i4_kernel<HEAD_DIM>), \
-      dim3(batch, query_heads), dim3(HEAD_DIM), 0, \
+      dim3(batch, query_heads), dim3(32), 0, \
       at::hip::getCurrentHIPStream().stream(), \
       reinterpret_cast<const half*>(query.data_ptr<at::Half>()), \
       reinterpret_cast<const half*>(key.data_ptr<at::Half>()), \
@@ -1335,10 +1586,27 @@ std::vector<torch::Tensor> fused_ffn_silu_hadamard_quant(torch::Tensor gate, tor
   auto packed = torch::empty(packed_shape, gate.options().dtype(torch::kUInt8));
   auto scales = torch::empty(scale_shape, gate.options());
   at::hip::HIPGuard guard{static_cast<char>(gate.get_device())};
-  hipLaunchKernelGGL(fused_ffn_silu_hadamard_quant_kernel, dim3(rows), dim3(kThreads), 0,
-      at::hip::getCurrentHIPStream().stream(), reinterpret_cast<const half*>(gate.data_ptr<at::Half>()),
-      reinterpret_cast<const half*>(up.data_ptr<at::Half>()), packed.data_ptr<uint8_t>(),
-      reinterpret_cast<half*>(scales.data_ptr<at::Half>()), rows, width);
+  auto stream = at::hip::getCurrentHIPStream().stream();
+#define LAUNCH_FFN_WARP(WIDTH) hipLaunchKernelGGL(\
+      (fused_ffn_silu_hadamard_quant_warp_kernel<WIDTH>), \
+      dim3(rows), dim3(32), 0, stream, \
+      reinterpret_cast<const half*>(gate.data_ptr<at::Half>()), \
+      reinterpret_cast<const half*>(up.data_ptr<at::Half>()), \
+      packed.data_ptr<uint8_t>(), \
+      reinterpret_cast<half*>(scales.data_ptr<at::Half>()), rows)
+  if (width == 32) { LAUNCH_FFN_WARP(32); }
+  else if (width == 64) { LAUNCH_FFN_WARP(64); }
+  else if (width == 128) { LAUNCH_FFN_WARP(128); }
+  else if (width == 256) { LAUNCH_FFN_WARP(256); }
+  else {
+    hipLaunchKernelGGL(fused_ffn_silu_hadamard_quant_kernel,
+        dim3(rows), dim3(kThreads), 0, stream,
+        reinterpret_cast<const half*>(gate.data_ptr<at::Half>()),
+        reinterpret_cast<const half*>(up.data_ptr<at::Half>()),
+        packed.data_ptr<uint8_t>(),
+        reinterpret_cast<half*>(scales.data_ptr<at::Half>()), rows, width);
+  }
+#undef LAUNCH_FFN_WARP
   TORCH_CHECK(hipGetLastError() == hipSuccess, "fused_ffn_silu_hadamard_quant launch failed");
   return {packed, scales};
 }
@@ -1426,22 +1694,29 @@ std::vector<torch::Tensor> fused_ffn_silu_hadamard_quant_general(
   } else {
     auto workspace = torch::empty(
         gate.sizes(), gate.options().dtype(torch::kFloat32));
-#define LAUNCH_LARGE_INNER(INNER) hipLaunchKernelGGL(\
+#define LAUNCH_LARGE_INNER_WARP(INNER) hipLaunchKernelGGL(\
+        (fused_ffn_general_inner_warp_kernel<INNER>), \
+        dim3(rows, remainder), dim3(32), 0, stream, \
+        reinterpret_cast<const half*>(gate.data_ptr<at::Half>()), \
+        reinterpret_cast<const half*>(up.data_ptr<at::Half>()), \
+        workspace.data_ptr<float>(), rows, width, remainder)
+#define LAUNCH_LARGE_INNER_LDS(INNER) hipLaunchKernelGGL(\
         (fused_ffn_general_inner_fixed_kernel<INNER>), \
         dim3(rows, remainder), dim3(kThreads), 0, stream, \
         reinterpret_cast<const half*>(gate.data_ptr<at::Half>()), \
         reinterpret_cast<const half*>(up.data_ptr<at::Half>()), \
         workspace.data_ptr<float>(), rows, width, remainder)
-    if (inner == 128) { LAUNCH_LARGE_INNER(128); }
-    else if (inner == 256) { LAUNCH_LARGE_INNER(256); }
-    else if (inner == 512) { LAUNCH_LARGE_INNER(512); }
-    else if (inner == 1024) { LAUNCH_LARGE_INNER(1024); }
+    if (inner == 128) { LAUNCH_LARGE_INNER_WARP(128); }
+    else if (inner == 256) { LAUNCH_LARGE_INNER_WARP(256); }
+    else if (inner == 512) { LAUNCH_LARGE_INNER_LDS(512); }
+    else if (inner == 1024) { LAUNCH_LARGE_INNER_LDS(1024); }
     else {
       TORCH_CHECK(false,
                   "large fused FFN supports inner H128/H256/H512/H1024; got H",
                   inner);
     }
-#undef LAUNCH_LARGE_INNER
+#undef LAUNCH_LARGE_INNER_WARP
+#undef LAUNCH_LARGE_INNER_LDS
     TORCH_CHECK(hipGetLastError() == hipSuccess,
                 "large fused FFN inner-transform launch failed");
     hipLaunchKernelGGL(fused_ffn_general_large_finish_kernel,
@@ -1473,21 +1748,12 @@ std::vector<torch::Tensor> fused_ffn_silu_hadamard_quant_grouped256(
   auto scales = torch::empty(scale_shape, gate.options());
   at::hip::HIPGuard guard{static_cast<char>(gate.get_device())};
   auto stream = at::hip::getCurrentHIPStream().stream();
-  if (rows > 1 || width >= 14336) {
-    hipLaunchKernelGGL(fused_ffn_silu_hadamard_quant_hadacore256_kernel,
-      dim3(rows, width / 256), dim3(32), 0, stream,
-      reinterpret_cast<const half*>(gate.data_ptr<at::Half>()),
-      reinterpret_cast<const half*>(up.data_ptr<at::Half>()),
-      packed.data_ptr<uint8_t>(),
-      reinterpret_cast<half*>(scales.data_ptr<at::Half>()), rows, width);
-  } else {
-    hipLaunchKernelGGL((fused_ffn_silu_hadamard_quant_grouped_kernel<256>),
-      dim3(rows, width / 256), dim3(256), 0, stream,
-      reinterpret_cast<const half*>(gate.data_ptr<at::Half>()),
-      reinterpret_cast<const half*>(up.data_ptr<at::Half>()),
-      packed.data_ptr<uint8_t>(),
-      reinterpret_cast<half*>(scales.data_ptr<at::Half>()), rows, width);
-  }
+  hipLaunchKernelGGL(fused_ffn_silu_hadamard_quant_warp256_kernel,
+    dim3(rows, width / 256), dim3(32), 0, stream,
+    reinterpret_cast<const half*>(gate.data_ptr<at::Half>()),
+    reinterpret_cast<const half*>(up.data_ptr<at::Half>()),
+    packed.data_ptr<uint8_t>(),
+    reinterpret_cast<half*>(scales.data_ptr<at::Half>()), rows, width);
   TORCH_CHECK(hipGetLastError() == hipSuccess,
               "grouped H256 FFN launch failed");
   return {packed, scales};
