@@ -222,6 +222,9 @@ def capture_runtime_provenance(runtime, args, expected_hip_sha256=None):
                     "QUAROT_BATCHED_H128", "QUAROT_STATIC_KV_METADATA",
                     "QUAROT_VERIFICATION_GRAPH", "QUAROT_CHUNK_PREPROCESS")},
             "adaptive_k": runtime.adaptive_k,
+            "ti_zero_accept_fallback": getattr(runtime, 'ti_zero_accept_fallback', 0),
+            "execution_policy": ('TI+AR initial-zero-accept guard' if getattr(
+                runtime, 'ti_zero_accept_fallback', 0) else 'pure ' + runtime.mode),
             "quarot_fused_k1_env": fused_k1_env,
             "cache_fused_k1_effective": (
                 "1" if fused_k1_env is None else fused_k1_env) != "0",
@@ -666,6 +669,8 @@ def parser():
     result.add_argument("--calibration")
     result.add_argument("--quantized-draft")
     result.add_argument("--adaptive-k", action="store_true")
+    result.add_argument("--ti-zero-accept-fallback", type=int, default=0,
+                        help="Explicit TI+AR hybrid if the first N rounds accept no tokens; default 0 keeps pure TI")
     result.add_argument("--expanded-mha", action="store_true")
     result.add_argument("--fused-decode-append",
                         action=argparse.BooleanOptionalAction, default=True,
@@ -728,6 +733,7 @@ def main(argv=None):
         max_cache_len=args.max_cache_len, compile_mode=args.compile_mode,
         ignore_eos=args.ignore_eos, calibration_path=args.calibration,
         quantized_draft=args.quantized_draft, adaptive_k=args.adaptive_k,
+        ti_zero_accept_fallback=args.ti_zero_accept_fallback,
         native_gqa=not args.expanded_mha,
         fused_decode_append=args.fused_decode_append,
         exact_row_norm=args.exact_row_norm,
@@ -794,7 +800,8 @@ def main(argv=None):
             and Path(args.draft).resolve() == Path(DEFAULT_DRAFT).resolve()):
         draft_revision = DEFAULT_DRAFT_REVISION
     payload = {
-        "contract": {"mode": args.mode, "dataset": args.dataset,
+        "contract": {"mode": args.mode + '+ar-guard' if args.ti_zero_accept_fallback else args.mode,
+                     "runtime_mode": args.mode, "dataset": args.dataset,
             "formal_protocol": args.limit is None,
             "qualified": (
                 args.limit is None and args.td_proxy_profile is None),

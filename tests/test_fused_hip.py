@@ -99,14 +99,24 @@ def test_grouped256_ffn_matches_per_group_scale_contract(rows, width):
     torch.cuda.synchronize()
     expected_packed = _pack_s4(
         rotated, scale_float.repeat_interleave(256, dim=-1))
-    if rows > 1 or width >= 14336:
-        # Hadacore stores the two H16 stages in FP16. Differences from the
-        # FP32-butterfly reference are confined to INT4 threshold decisions.
-        assert (packed == expected_packed).float().mean().item() >= 0.997
-        torch.testing.assert_close(scale, expected_scale, rtol=2e-3, atol=5e-4)
-    else:
-        assert torch.equal(packed, expected_packed)
-        assert torch.equal(scale, expected_scale)
+    # Every shape now uses the FP32 warp butterfly. Quantization divides by
+    # the FP32 group scale; only the returned scale is rounded to FP16.
+    assert torch.equal(packed, expected_packed)
+    assert torch.equal(scale, expected_scale)
+
+
+@pytest.mark.parametrize("rows", [15, 16])
+@pytest.mark.parametrize("width", [11008, 14336, 25600])
+def test_grouped256_verification_matches_independent_decode_rows(rows, width):
+    torch.manual_seed(rows + width)
+    gate = torch.randn(rows, width, device="cuda", dtype=torch.float16)
+    up = torch.randn_like(gate)
+    actual = _HIP.fused_ffn_silu_hadamard_quant_grouped256(gate, up)
+    independent = [_HIP.fused_ffn_silu_hadamard_quant_grouped256(
+        gate[index:index + 1], up[index:index + 1]) for index in range(rows)]
+    for part in (0, 1):
+        assert torch.equal(actual[part], torch.cat(
+            [row[part] for row in independent], dim=0))
 
 
 def test_grouped_scale_bpre_gemm_matches_partial_sum_reference():
@@ -399,12 +409,13 @@ def test_special_values_and_int4_endpoints():
         gate_f = gate.float()
         y = _hadamard(
             (torch.nn.functional.silu(gate_f) * up.float()).view(2, -1, 256),
-            output_dtype=torch.float16).view_as(gate)
-        expected_scale = (y.view(2, -1, 256).abs().amax(-1) / 7).half()
-        expected_scale.clamp_min_(torch.finfo(torch.float16).tiny)
+            output_dtype=torch.float32).view_as(gate)
+        scale_float = (y.view(2, -1, 256).abs().amax(-1) / 7).clamp_min(
+            torch.finfo(torch.float16).tiny)
+        expected_scale = scale_float.half()
         torch.cuda.synchronize()
         assert torch.equal(
-            packed, _pack_s4(y, expected_scale.repeat_interleave(256, -1)))
+            packed, _pack_s4(y, scale_float.repeat_interleave(256, -1)))
         assert torch.equal(scale, expected_scale)
     endpoints = torch.tensor([-8, -7, -1, 0, 1, 7], device="cuda", dtype=torch.int8)
     expected = torch.tensor([0x98, 0x0F, 0x71], device="cuda", dtype=torch.uint8)

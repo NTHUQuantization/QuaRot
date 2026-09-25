@@ -15,7 +15,7 @@ from e2e.speculative import PARD2_PROFILES, Pard2Spec, load_runtime
 
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_TARGET = ROOT / "qwen3_8b_fused_v1_rtn_w4a4kv4"
+DEFAULT_TARGET = ROOT / "qwen3_8b_fused_v1_gptq_w4a4kv4_v1"
 DEFAULT_DRAFT = ROOT / ".hf_cache/pard/hub/models--amd--PARD2-Qwen3-8B/snapshots/67a1516c8f6fc145cda99916799a0cbb3a4af135"
 DEFAULT_TOKENIZER = ROOT / ".hf_cache/pard/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218"
 
@@ -50,6 +50,9 @@ def verify_target_checkpoint(target, benchmark_profile=None):
             "Create it from the locally pinned BF16 source "
             f"{spec.target_model_id}@{spec.target_revision} with "
             "e2e/checkpoint_utils/quantize_checkpoint.py.")
+    if path.resolve() == DEFAULT_TARGET.resolve():
+        from e2e.checkpoint_utils.require_gptq import require_gptq_checkpoint
+        require_gptq_checkpoint(path)
 
 
 def parser():

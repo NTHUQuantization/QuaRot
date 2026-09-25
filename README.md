@@ -121,12 +121,12 @@ python e2e/benchmark_accuracy.py \
 ## Fused PARD2: Qwen3-8B / 14B / 32B
 
 This branch (`fused_pard2`) runs dense Qwen3 targets with fused W4A4KV4
-HIP kernels on AMD GPUs. The supported inference contract is batch 1,
+HIP kernels on AMD GPUs. The natural-generation inference contract is batch 1,
 greedy decoding, thinking disabled, normal EOS handling, and `draft_k=15`.
 
 | Target | Profile | Canonical modes | Target checkpoint |
 |---|---|---|---|
-| Qwen3-8B | `qwen3_8b` | AR, PARD2-TI, PARD2-TD | RTN W4A4KV4 |
+| Qwen3-8B | `qwen3_8b` | AR, PARD2-TI, PARD2-TD | GPTQ W4A4KV4 default; explicit RTN paths supported |
 | Qwen3-14B | `qwen3_14b` | AR, PARD2-TI, PARD2-TD | RTN W4A4KV4 |
 | Qwen3-32B | `qwen3_32b` | AR, PARD2-TI | GPTQ W4A4KV4; RTN baseline |
 
@@ -138,7 +138,13 @@ Start with the **[Qwen3 setup and execution guide](e2e/PARD2_QWEN3.md)**
 for pinned model revisions, checkpoint conversion, generation, benchmarking,
 and qualification. Always pass the target, tokenizer, and draft paths explicitly
 when selecting 14B or 32B; selecting a profile validates the model contract but
-does not download models or replace the legacy 8B path defaults.
+does not download models or replace the 8B path defaults. The default 8B target
+is `qwen3_8b_fused_v1_gptq_w4a4kv4_v1`; its GPTQ shard signatures and completeness
+are checked before use.
+
+The latest kernel/runtime synchronization is described in
+[the synchronization notes](e2e/KERNEL_RUNTIME_SYNC.md), including extension
+rebuilding and the separate fixed-length synchronous batch contract.
 
 ### Documentation
 

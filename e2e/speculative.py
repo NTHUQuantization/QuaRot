@@ -400,6 +400,8 @@ class GenerationResult:
     stage_ms: dict[str, float] = field(default_factory=dict)
     peak_vram_bytes: int = 0
     proposal_lengths_by_step: list[int] = field(default_factory=list)
+    ar_fallback_tokens: int = 0
+    fallback_after_verifier_steps: int | None = None
 
     def metrics(self) -> dict:
         generated = len(self.output_ids)
@@ -735,7 +737,8 @@ class FusedPardRuntime:
                  rowwise_lm_head=False, exact_small_chunk=None,
                  td_target_basis=None, td_cache_basis=True,
                  td_lazy_features=False, td_unique_projection=False,
-                 td_basis_fold=False, fused_norm_quant=False):
+                 td_basis_fold=False, fused_norm_quant=False,
+                 ti_zero_accept_fallback=0):
         if mode not in ("ar", "pard2-ti", "pard2-td"):
             raise ValueError("mode must be ar, pard2-ti, or pard2-td")
         if mode == "ar" and draft is not None:
@@ -750,6 +753,16 @@ class FusedPardRuntime:
         self.td_proxy_profile = spec.td_proxy_profile
         self.target_alignment = spec.target_alignment
         self.ignore_eos, self.adaptive_k = ignore_eos, adaptive_k
+        if (not isinstance(ti_zero_accept_fallback, int)
+                or ti_zero_accept_fallback < 0):
+            raise ValueError('ti_zero_accept_fallback must be a nonnegative integer')
+        if ti_zero_accept_fallback and mode != 'pard2-ti':
+            raise ValueError('zero-accept AR fallback is supported only for PARD2-TI')
+        # Opt-in hybrid policy. Zero preserves the pure fixed-k TI benchmark.
+        # Check only the initial rounds: later short rejection streaks can
+        # recover on otherwise productive requests. State is request-local.
+        self.ti_zero_accept_fallback = ti_zero_accept_fallback
+        self.draft_prefill_logits_to_keep = 1
         self.native_gqa = bool(native_gqa)
         self.fused_decode_append = bool(fused_decode_append)
         self.td_cache_basis = bool(td_cache_basis)
@@ -828,7 +841,12 @@ class FusedPardRuntime:
         self._verification_graphs.clear()
         self._verification_cache = None
 
-    def _target_cache(self):
+    def _target_cache(self, batch_size=1):
+        if (self._verification_cache is not None
+                and self._verification_cache.batch_size != batch_size):
+            # Graphs own the cache storage and fixed batch shape.
+            self._verification_graphs.clear()
+            self._verification_cache = None
         if self.verification_graph and self._verification_cache is not None:
             cache = self._verification_cache
             cache.length = 0
@@ -836,22 +854,29 @@ class FusedPardRuntime:
             cache._active_chunk_metadata = None
             cache._metadata_prepared_key = None
             return cache
-        cache = self.target.build_cache(1, self.page_size, self.max_cache_len,
+        cache = self.target.build_cache(batch_size, self.page_size, self.max_cache_len,
             native_gqa=self.native_gqa,
             fused_decode_append=self.fused_decode_append)
+        if batch_size > 1:
+            # The persistent flat arange is not the interleaved page order
+            # needed by a multi-page batch. Static decode metadata is retained.
+            cache._persistent_metadata_enabled = False
         if self.verification_graph:
             self._verification_cache = cache
         return cache
 
 
-    def _draft_cache(self):
+    def _draft_cache(self, batch_size=1):
         if getattr(self.draft.config, "model_type", "").endswith("_quarot"):
-            return self.draft.build_cache(
-                1, self.page_size, self.max_cache_len,
+            cache = self.draft.build_cache(
+                batch_size, self.page_size, self.max_cache_len,
                 native_gqa=self.native_gqa,
                 fused_decode_append=self.fused_decode_append)
+            if batch_size > 1:
+                cache._persistent_metadata_enabled = False
+            return cache
         from transformers import StaticCache
-        return StaticCache(config=self.draft.config, max_batch_size=1,
+        return StaticCache(config=self.draft.config, max_batch_size=batch_size,
                            max_cache_len=self.max_cache_len,
                            device=next(self.draft.parameters()).device,
                            dtype=next(self.draft.parameters()).dtype)
@@ -912,10 +937,19 @@ class FusedPardRuntime:
 
     @torch.inference_mode()
     def generate(self, input_ids, max_new_tokens=256):
-        if input_ids.shape[0] != 1:
-            raise ValueError("PARD2 v1 supports batch size one")
+        if input_ids.ndim != 2 or min(input_ids.shape) < 1 or max_new_tokens < 1:
+            raise ValueError("generation requires nonempty [batch, tokens] and positive output length")
         if input_ids.shape[1] + max_new_tokens + self.spec.draft_k > self.max_cache_len:
             raise ValueError("generation exceeds configured cache capacity")
+        if input_ids.shape[0] != 1:
+            if getattr(self, 'ti_zero_accept_fallback', 0):
+                raise ValueError('zero-accept AR fallback requires batch size one')
+            if self.mode == 'ar':
+                raise ValueError("Use the batched AR benchmark adapter for batched target generation")
+            if not self.ignore_eos or self.adaptive_k is not None:
+                raise ValueError("Synchronous PARD2 batches require ignore_eos=True and fixed draft_k")
+            from e2e.synchronous_pard import run_synchronous
+            return run_synchronous(self, input_ids, max_new_tokens)
         return self._generate_ar(input_ids, max_new_tokens) if self.mode == "ar" else self._generate_spec(input_ids, max_new_tokens)
 
     def _generate_ar(self, input_ids, max_new_tokens):
@@ -946,6 +980,9 @@ class FusedPardRuntime:
         draft_features = None
         target_forwards = draft_forwards = proposed = accepted_total = 0
         generated, emitted_steps, accept_lengths, proposal_lengths = [], [], [], []
+        fallback_threshold = getattr(self, 'ti_zero_accept_fallback', 0)
+        ar_fallback_tokens = 0
+        fallback_after_verifier_steps = None
         timer, first_at = _StageTimer(), None
         torch.cuda.reset_peak_memory_stats(); torch.cuda.synchronize(); started = time.perf_counter()
 
@@ -985,7 +1022,8 @@ class FusedPardRuntime:
             timer.record("draft_prefill", lambda: self.draft(
                 input_ids=prefix, past_key_values=draft_cache,
                 cache_position=prefix_pos, use_cache=True, attention_mask=None,
-                return_dict=True, **prefix_kwargs))
+                return_dict=True, logits_to_keep=getattr(self, 'draft_prefill_logits_to_keep', 1),
+                **prefix_kwargs))
             draft_forwards += 1
             draft_cache_len = prefix.shape[1]
             draft_input = input_ids[:, -1:]
@@ -993,6 +1031,27 @@ class FusedPardRuntime:
                 draft_features = draft_features[:, -1:]
 
         while len(generated) < max_new_tokens:
+            if (fallback_threshold and accepted_total == 0
+                    and len(accept_lengths) >= fallback_threshold):
+                # The committed target cache contains every emitted token
+                # except the pending correction. Append that token exactly
+                # once, then continue target-only decoding on this cache.
+                if fallback_after_verifier_steps is None:
+                    fallback_after_verifier_steps = len(accept_lengths)
+                target_pos = torch.arange(target_cache.length,
+                    target_cache.length + 1, device=input_ids.device)
+                target_out, _ = timer.record('target_ar_fallback',
+                    lambda: self._target_call(target_input, target_cache, target_pos))
+                target_cache = target_out.past_key_values
+                token = int(target_out.logits[:, -1].argmax(-1))
+                generated.append(token)
+                emitted_steps.append(1)
+                target_forwards += 1
+                ar_fallback_tokens += 1
+                if self._stop(generated):
+                    break
+                target_input = torch.tensor([[token]], device=input_ids.device, dtype=input_ids.dtype)
+                continue
             k = self.adaptive_k.choose() if self.adaptive_k is not None else self.spec.draft_k
             masks = torch.full((1, k-1), self.spec.pard_token,
                                device=input_ids.device, dtype=input_ids.dtype)
@@ -1079,8 +1138,9 @@ class FusedPardRuntime:
         stages = timer.totals(); ended = time.perf_counter(); first_at = first_at or ended
         return GenerationResult(generated, (first_at-started)*1000, (ended-first_at)*1000,
             (ended-started)*1000, target_forwards, draft_forwards, proposed,
-            accepted_total, len(emitted_steps), emitted_steps, accept_lengths,
-            stages, torch.cuda.max_memory_allocated(), proposal_lengths)
+            accepted_total, len(accept_lengths), emitted_steps, accept_lengths,
+            stages, torch.cuda.max_memory_allocated(), proposal_lengths,
+            ar_fallback_tokens, fallback_after_verifier_steps)
 
 
 def _load_td_projection_state(draft_snapshot, spec, draft_config):
@@ -1161,13 +1221,16 @@ def load_runtime(*, mode, target_checkpoint, draft_snapshot, tokenizer_path,
                  td_cache_basis=True, td_lazy_features=False,
                  td_unique_projection=False, td_basis_fold=False,
                  fused_norm_quant=False, benchmark_profile=None,
-                 td_proxy_profile=None):
+                 td_proxy_profile=None, ti_zero_accept_fallback=0):
     """Load a pinned local runtime without network access or checkpoint copies."""
     from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
     from e2e.model_registry import runtime_types
 
     if mode not in ("ar", "pard2-ti", "pard2-td"):
         raise ValueError("mode must be ar, pard2-ti, or pard2-td")
+    if (not isinstance(ti_zero_accept_fallback, int) or ti_zero_accept_fallback < 0
+            or (ti_zero_accept_fallback and mode != 'pard2-ti')):
+        raise ValueError('zero-accept fallback requires PARD2-TI and a nonnegative integer')
     if td_proxy_profile is not None and mode != "pard2-td":
         raise ValueError("--td-proxy-profile is valid only for pard2-td")
 
@@ -1243,4 +1306,5 @@ def load_runtime(*, mode, target_checkpoint, draft_snapshot, tokenizer_path,
         td_lazy_features=td_lazy_features,
         td_unique_projection=td_unique_projection,
         td_basis_fold=td_basis_fold,
-        fused_norm_quant=fused_norm_quant)
+        fused_norm_quant=fused_norm_quant,
+        ti_zero_accept_fallback=ti_zero_accept_fallback)
