@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+config.local.json
+/runs/
+*.so
+**/build/
+*.egg-info/
+!/reference/*.json
+!/config.example.json

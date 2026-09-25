@@ -1,0 +1,11 @@
+{
+  "label": "my-version",
+  "run_id": "my-version-001",
+  "repo": "runtime",
+  "engine": "ar",
+  "target": "/models/qwen3_8b_gptq",
+  "draft": "/models/PARD2-Qwen3-8B",
+  "tokenizer": "/models/Qwen3-8B",
+  "output": "runs",
+  "fht_path": "runtime/third-party/hadacore"
+}

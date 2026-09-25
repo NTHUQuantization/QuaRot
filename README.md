@@ -1,3 +1,5 @@
+> 通用 Qwen3-8B GPTQ 測速入口：[方法、配置、任意版本執行與比較](benchmarks/qwen3_8b_benchmark/README.md)。
+
 
 # <img src="img/carrot.png" alt="Your Image" width="40" height="45">QuaRot: Outlier-Free 4-Bit Inference in Rotated LLMs
 This repository contains the code for [**QuaRot**: Outlier-Free 4-Bit Inference in Rotated LLMs](https://arxiv.org/abs/2404.00456).

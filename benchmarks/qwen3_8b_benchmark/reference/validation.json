@@ -1,0 +1,9 @@
+{
+  "cpu_tests": 12,
+  "synthetic_worker_records": 108,
+  "input_hash_preflight": "passed on actual GPTQ target/tokenizer/draft files",
+  "fixed_input_ids_and_orders": "verified unchanged",
+  "timing_sync_memory_block": "verified unchanged",
+  "gpu_execution": "not rerun in this new checkout",
+  "extension_build": "not rerun in this new checkout; prepare.py builds on the target machine"
+}
