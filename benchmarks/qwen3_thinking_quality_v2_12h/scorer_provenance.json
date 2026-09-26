@@ -1,0 +1,15 @@
+{
+  "legacy_source": "fused_v1/e2e/score_qwen3_32b_tasks.py",
+  "legacy_sha256": "a3d531212adf117d15b506c39435f49c9e810529781a0035d67820bc37a3413e",
+  "copied_functions": [
+    "code_candidate",
+    "extract_numeric_answer",
+    "last_boxed",
+    "math_equal",
+    "normalize_math",
+    "numeric_value",
+    "python_prompt",
+    "strip_thinking"
+  ],
+  "changes": "New thinking boundary and final-only boxed extraction; legacy math normalization and code candidate behavior retained. Never compare new scores to old greedy as pure precision loss."
+}

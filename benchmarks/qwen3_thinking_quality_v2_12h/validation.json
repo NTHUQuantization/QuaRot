@@ -1,0 +1,15 @@
+{
+  "cpu_contract_tests": 8,
+  "passed": true,
+  "selection_is_output_independent": true,
+  "tasks": {
+    "humaneval": 64,
+    "gsm8k": 64,
+    "math_500": 64
+  },
+  "formal_samples_per_variant": 192,
+  "max_formal_output_tokens": 786432,
+  "gpu_generation_deadline_unix": 1790477943,
+  "hard_deadline_unix": 1790481543,
+  "no_weights": true
+}

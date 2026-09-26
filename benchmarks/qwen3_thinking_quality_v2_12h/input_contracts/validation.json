@@ -1,0 +1,16 @@
+{
+  "8b": {
+    "humaneval": {
+      "count": 64,
+      "max_input_tokens": 438
+    },
+    "gsm8k": {
+      "count": 64,
+      "max_input_tokens": 152
+    },
+    "math_500": {
+      "count": 64,
+      "max_input_tokens": 235
+    }
+  }
+}
