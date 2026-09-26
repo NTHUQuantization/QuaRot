@@ -1,0 +1,101 @@
+{
+  "protocol_id": "qwen3-thinking-quality-v1",
+  "primary_size": "8b",
+  "optional_sizes": [
+    "14b",
+    "32b"
+  ],
+  "models": {
+    "8b": {
+      "repo": "Qwen/Qwen3-8B",
+      "revision": "b968826d9c46dd6066d109eabc6255188de91218"
+    },
+    "14b": {
+      "repo": "Qwen/Qwen3-14B",
+      "revision": "40c069824f4251a91eefaf281ebe4c544efd3e18"
+    },
+    "32b": {
+      "repo": "Qwen/Qwen3-32B",
+      "revision": "9216db5781bf21249d130ec9da846c4624c16137"
+    }
+  },
+  "tasks": {
+    "humaneval": {
+      "count": 164,
+      "metric": "execution_pass_at_1",
+      "prompt_sha256": "0ae413a42643cbfe71bb74fe7e6e62b8eb458de483a36ed5c3af9f7709299486",
+      "ground_truth_sha256": "82d372e396d3eca9d71152c05890f59f17e10cc458e1ccf5fccf4e68934a8687"
+    },
+    "gsm8k": {
+      "count": 1319,
+      "metric": "boxed_numeric_exact_match",
+      "prompt_sha256": "6a0f8c8f7767defb9e58fef8b5e80cb979ff96f218a90b80d4569de4986d940c",
+      "ground_truth_sha256": "1e06307354f46025bcf5f13b7eca7fd0ec2ad8081996f17ae1b446ee21822d6b"
+    },
+    "math_500": {
+      "count": 500,
+      "metric": "boxed_conservative_normalized_exact_match",
+      "prompt_sha256": "8820548c97c90712b5f1dfb6a74eb1bc4e5e275627cdb9faa35504a0792fe38c",
+      "ground_truth_sha256": "cd38d8462d3c7dc0789416f2065f719460ffb94f56fe59cf22751352094cf76a"
+    }
+  },
+  "replicate_seeds": [
+    20260926,
+    20260927,
+    20260928
+  ],
+  "batch_size": 1,
+  "enable_thinking": true,
+  "add_generation_prompt": true,
+  "num_fewshot": 0,
+  "generation": {
+    "do_sample": true,
+    "temperature": 0.6,
+    "top_k": 20,
+    "top_p": 0.95,
+    "min_p": 0.0,
+    "num_beams": 1,
+    "num_return_sequences": 1,
+    "repetition_penalty": 1.0,
+    "no_repeat_ngram_size": 0,
+    "max_new_tokens": 32768,
+    "min_new_tokens": 0,
+    "eos_token_id": [
+      151645,
+      151643
+    ],
+    "pad_token_id": 151643,
+    "bos_token_id": 151643,
+    "use_cache": true,
+    "renormalize_logits": false
+  },
+  "logits_warper_order": [
+    "temperature",
+    "top_k",
+    "top_p"
+  ],
+  "think_end_token_id": 151668,
+  "bf16_reference": {
+    "weight_dtype": "bfloat16",
+    "kv_dtype": "bfloat16",
+    "transformers": "4.57.6",
+    "tokenizers": "0.22.2",
+    "torch_base_version": "2.9.1",
+    "python": "3.10",
+    "attention": "sdpa",
+    "backend": "hf_transformers",
+    "quantization": null
+  },
+  "pilot_count_per_task": 4,
+  "sandbox": {
+    "image": "python@sha256:6857d2dae63e052057f2db389a7061188ac9a92a3fa8d402bde68f36df6fada1",
+    "candidate_timeout_seconds": 10,
+    "memory_mib": 128,
+    "cpus": 1,
+    "pids": 32
+  },
+  "cross_gpu_timing_is_speedup_baseline": false,
+  "max_position_embeddings": "preserve_original_config",
+  "rope_scaling": "preserve_original_config_no_yarn",
+  "primary_status": "protocol_prepared_not_gpu_validated"
+}

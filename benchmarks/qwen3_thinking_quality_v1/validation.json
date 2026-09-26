@@ -1,0 +1,53 @@
+{
+  "cpu_unit_tests": 8,
+  "cpu_unit_tests_passed": true,
+  "python_syntax_valid": true,
+  "input_contracts": {
+    "8b": {
+      "humaneval": {
+        "count": 164,
+        "max_input_tokens": 438
+      },
+      "gsm8k": {
+        "count": 1319,
+        "max_input_tokens": 222
+      },
+      "math_500": {
+        "count": 500,
+        "max_input_tokens": 825
+      }
+    },
+    "14b": {
+      "humaneval": {
+        "count": 164,
+        "max_input_tokens": 438
+      },
+      "gsm8k": {
+        "count": 1319,
+        "max_input_tokens": 222
+      },
+      "math_500": {
+        "count": 500,
+        "max_input_tokens": 825
+      }
+    },
+    "32b": {
+      "humaneval": {
+        "count": 164,
+        "max_input_tokens": 438
+      },
+      "gsm8k": {
+        "count": 1319,
+        "max_input_tokens": 222
+      },
+      "math_500": {
+        "count": 500,
+        "max_input_tokens": 825
+      }
+    }
+  },
+  "weight_files_in_bundle": false,
+  "gpu_generation_started": false,
+  "bf16_runner_included": false,
+  "note": "Remote agent implements BF16 runner against frozen contract; this package contains fixed prompts, scoring and model/input hashes. Existing PARD2 argmax and 8192 cache do not yet implement this thinking contract."
+}

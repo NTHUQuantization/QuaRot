@@ -1,0 +1,44 @@
+{
+  "8b": {
+    "humaneval": {
+      "count": 164,
+      "max_input_tokens": 438
+    },
+    "gsm8k": {
+      "count": 1319,
+      "max_input_tokens": 222
+    },
+    "math_500": {
+      "count": 500,
+      "max_input_tokens": 825
+    }
+  },
+  "14b": {
+    "humaneval": {
+      "count": 164,
+      "max_input_tokens": 438
+    },
+    "gsm8k": {
+      "count": 1319,
+      "max_input_tokens": 222
+    },
+    "math_500": {
+      "count": 500,
+      "max_input_tokens": 825
+    }
+  },
+  "32b": {
+    "humaneval": {
+      "count": 164,
+      "max_input_tokens": 438
+    },
+    "gsm8k": {
+      "count": 1319,
+      "max_input_tokens": 222
+    },
+    "math_500": {
+      "count": 500,
+      "max_input_tokens": 825
+    }
+  }
+}

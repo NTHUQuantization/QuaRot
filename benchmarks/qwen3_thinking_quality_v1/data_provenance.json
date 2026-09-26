@@ -1,0 +1,28 @@
+{
+  "humaneval": {
+    "path": "/workspace_root/fused_v1/qwen3_32b_results/accuracy/ground_truth_sources/openai_humaneval_test.parquet",
+    "sha256": "2f2871a15fbc95b6c683043359f4ed8e144c5a1c4f24f25f66bc51f598dfcfb6",
+    "split": "test",
+    "count": 164,
+    "prepared_sha256": "9dbb6bf33a4d946bd5df991441455ebf4fff07b6d035749dc7bfd897adac8d19"
+  },
+  "gsm8k": {
+    "path": "/workspace_root/fused_v1/qwen3_32b_results/accuracy/ground_truth_sources/gsm8k_main_test.parquet",
+    "sha256": "ee7b8da9e381df27b9e3f7758a159ab2bdaa4dbaa910546cbbc47e0cb44e4f59",
+    "split": "test",
+    "count": 1319,
+    "prepared_sha256": "f6d22ace819bfab3292a16496af4616b391e50044660c0afb5b14c8d65f4a9c1"
+  },
+  "math_500": {
+    "revision": "bd7413c841fab3ceb10e5f1c4c5c4662d8e86542",
+    "split": "test",
+    "files": [
+      {
+        "url": "https://huggingface.co/datasets/HuggingFaceH4/MATH-500/resolve/bd7413c841fab3ceb10e5f1c4c5c4662d8e86542/default/test/0000.parquet",
+        "sha256": "0e8aa28c4324d6ac98f1e58812954c17d3367db19e41af5f9505e7f5b302f171"
+      }
+    ],
+    "count": 500,
+    "prepared_sha256": "6d4cba1ba156699c30d9e30a387ed7cd8cb8bc8d0c7ca9299cea046b988402d2"
+  }
+}
