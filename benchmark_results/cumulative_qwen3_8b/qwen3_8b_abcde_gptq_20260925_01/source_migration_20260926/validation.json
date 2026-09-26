@@ -1,0 +1,16 @@
+{
+  "valid": true,
+  "validated_unix": 1790355270.7342308,
+  "cpu_tests": 6,
+  "new_extensions_built": [
+    "B",
+    "C"
+  ],
+  "new_extension_import_verified": [
+    "B",
+    "C"
+  ],
+  "gpu_tests": "deferred until A completes; new B/C pilots queued first",
+  "current_worker_preserved": true,
+  "old_pilot_excluded": true
+}

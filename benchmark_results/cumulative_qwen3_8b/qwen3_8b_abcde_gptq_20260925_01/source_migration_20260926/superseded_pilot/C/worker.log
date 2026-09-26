@@ -1,0 +1,43 @@
+`torch_dtype` is deprecated! Use `dtype` instead!
+
+Loading checkpoint shards:   0%|          | 0/37 [00:00<?, ?it/s]
+Loading checkpoint shards:   3%|▎         | 1/37 [00:02<01:45,  2.93s/it]
+Loading checkpoint shards:  46%|████▌     | 17/37 [00:03<00:02,  7.75it/s]
+Loading checkpoint shards:  73%|███████▎  | 27/37 [00:03<00:01,  9.77it/s]
+Loading checkpoint shards: 100%|██████████| 37/37 [00:03<00:00,  9.66it/s]
+pilot C 0 humaneval HumanEval/15 3 / 108
+pilot C 0 math_500 test/algebra/2391.json 6 / 108
+pilot C 0 math_500 test/intermediate_algebra/1405.json 9 / 108
+pilot C 0 gsm8k gsm8k/test/1311 12 / 108
+pilot C 0 math_500 test/geometry/711.json 15 / 108
+pilot C 0 humaneval HumanEval/3 18 / 108
+pilot C 0 humaneval HumanEval/23 21 / 108
+pilot C 0 gsm8k gsm8k/test/1131 24 / 108
+pilot C 0 gsm8k gsm8k/test/1251 27 / 108
+pilot C 0 humaneval HumanEval/160 30 / 108
+pilot C 0 math_500 test/algebra/824.json 33 / 108
+pilot C 0 gsm8k gsm8k/test/418 36 / 108
+pilot C 1 gsm8k gsm8k/test/1131 39 / 108
+pilot C 1 math_500 test/algebra/824.json 42 / 108
+pilot C 1 humaneval HumanEval/160 45 / 108
+pilot C 1 math_500 test/intermediate_algebra/1405.json 48 / 108
+pilot C 1 gsm8k gsm8k/test/1311 51 / 108
+pilot C 1 gsm8k gsm8k/test/418 54 / 108
+pilot C 1 humaneval HumanEval/23 57 / 108
+pilot C 1 math_500 test/geometry/711.json 60 / 108
+pilot C 1 gsm8k gsm8k/test/1251 63 / 108
+pilot C 1 humaneval HumanEval/15 66 / 108
+pilot C 1 math_500 test/algebra/2391.json 69 / 108
+pilot C 1 humaneval HumanEval/3 72 / 108
+pilot C 2 math_500 test/algebra/2391.json 75 / 108
+pilot C 2 math_500 test/algebra/824.json 78 / 108
+pilot C 2 humaneval HumanEval/23 81 / 108
+pilot C 2 gsm8k gsm8k/test/1251 84 / 108
+pilot C 2 gsm8k gsm8k/test/1131 87 / 108
+pilot C 2 gsm8k gsm8k/test/418 90 / 108
+pilot C 2 math_500 test/intermediate_algebra/1405.json 93 / 108
+pilot C 2 humaneval HumanEval/3 96 / 108
+pilot C 2 gsm8k gsm8k/test/1311 99 / 108
+pilot C 2 math_500 test/geometry/711.json 102 / 108
+pilot C 2 humaneval HumanEval/15 105 / 108
+pilot C 2 humaneval HumanEval/160 108 / 108

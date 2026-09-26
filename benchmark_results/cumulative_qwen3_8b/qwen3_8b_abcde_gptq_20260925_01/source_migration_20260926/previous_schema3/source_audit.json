@@ -1,0 +1,45 @@
+{
+  "A": {
+    "branch": "main",
+    "commit": "8b3790d03d18416923627ea274bf36f6f42dde9c",
+    "files": {
+      "quarot/kernels/gemm.hip": "d1a8ff64b3675721682c9e4dec03fde2e72450d55ed6fd9f9ebbf300d19f4a4a",
+      "quarot/kernels/hadamard.hip": "191abe9b1456c530ccd4ab1030097fb0d20ac9da44d2ca0fed5c07a87d34cf02",
+      "quarot/nn/linear.py": "380aa65beea1e8406abc6a5f0ef790d912b92a0c7fae8ab498c2ad082bccb9f1",
+      "e2e/quantized_common.py": "829ba24ad189d0a860cd7d4f9ba96bfc141ab4ca4379d1e6d90b11f232ebbde1",
+      "quarot/transformers/kv_cache.py": "229026efc33dffb8a0864a8459c45e1103365722b3d9b599b7cf237d0e4ad04f",
+      "setup.py": "5f4f2a0e39ac0f08b3d77eda5f6b3f069c20b9935fc25e854bd27d3331b04711"
+    }
+  },
+  "B": {
+    "branch": "Hadacore",
+    "commit": "03340c59926f6c0bdda5f6d6d357aec91e548532",
+    "files": {
+      "quarot/kernels/gemm.hip": "d1a8ff64b3675721682c9e4dec03fde2e72450d55ed6fd9f9ebbf300d19f4a4a",
+      "quarot/kernels/hadamard.hip": "4074d6dbe2b4b7103b503fe509526f1267fdf7c358bd770a74cd90256a472f8d",
+      "quarot/nn/linear.py": "380aa65beea1e8406abc6a5f0ef790d912b92a0c7fae8ab498c2ad082bccb9f1",
+      "e2e/quantized_common.py": "829ba24ad189d0a860cd7d4f9ba96bfc141ab4ca4379d1e6d90b11f232ebbde1",
+      "quarot/transformers/kv_cache.py": "229026efc33dffb8a0864a8459c45e1103365722b3d9b599b7cf237d0e4ad04f",
+      "setup.py": "a7f4b1671853187ebe1ecd7504fe17ecd36353dd9224a8407948ce7b908542d2"
+    }
+  },
+  "C": {
+    "branch": "GEMM",
+    "commit": "ce73a82a2c7c4ed258dcd4e6e69ad9b2515aef52",
+    "files": {
+      "quarot/kernels/gemm.hip": "da918a8d115d92f86e682802e04b5184ceffbd9f01224ba2654469c72862ee0e",
+      "quarot/kernels/hadamard.hip": "4074d6dbe2b4b7103b503fe509526f1267fdf7c358bd770a74cd90256a472f8d",
+      "quarot/nn/linear.py": "c34f09d36781231fe90a1f80c72c8f3c6667aca38d617ced11f24c373619d7bf",
+      "e2e/quantized_common.py": "829ba24ad189d0a860cd7d4f9ba96bfc141ab4ca4379d1e6d90b11f232ebbde1",
+      "quarot/transformers/kv_cache.py": "229026efc33dffb8a0864a8459c45e1103365722b3d9b599b7cf237d0e4ad04f",
+      "setup.py": "dd9be152e06209da7394fa971e20dcaea8611eba8bec3542f16ed4cb24e0af08"
+    }
+  },
+  "findings": [
+    "A (HIP) and B (Hadacore) have identical GEMM and Linear4bit source.",
+    "B (Hadacore) and C (GEMM) have identical Hadamard kernel source.",
+    "B enables HadaCore; C retains HadaCore and additionally enables optimized GEMM.",
+    "Narrative order: A HIP -> B Hadacore -> C GEMM -> D Fusion -> E PARD2.",
+    "All variants load one newly converted GPTQ checkpoint with grouped_h256_v1 and clip=0.9; original branch kernels retained."
+  ]
+}

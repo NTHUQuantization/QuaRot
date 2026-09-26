@@ -1,0 +1,21 @@
+GPTQ run initialized; all three model sizes verified.
+Starting: pilot D 1790336815.6340075
+Completed: pilot D
+Starting: pilot A 1790337101.8350072
+
+Resuming verified completed D/A pilots at 1790338950.3003037
+Already complete: pilot D
+Already complete: pilot A
+Starting: pilot C 1790338950.5050714
+Completed: pilot C
+Starting: pilot B 1790339715.3000822
+Completed: pilot B
+Starting: pilot E 1790341116.0076432
+Completed: pilot E
+{"valid": true, "stage": "pilot", "prompts": 12, "records": 540, "within_variant_exact": true, "D_E_exact": true, "cross_pairs": {"AB": 5, "AC": 0, "AD": 0, "AE": 0, "BC": 0, "BD": 0, "BE": 0, "CD": 0, "CE": 0, "DE": 12}, "complete_variants": ["A", "B", "C", "D", "E"], "memory_recorded": true}
+Starting: formal D 1790341307.0635977
+Completed: formal D
+Starting: formal A 1790344006.895064
+
+Naming schema v3: A HIP / B Hadacore / C GEMM / D Fusion / E PARD2; adopting active formal A at 1790345835.5394373
+Verified labeling-only adapter change: ['93dfa04a810528a6e5906160b8d025061b0556b84a6936e00b35e71eeee44c87', 'e660a7a3a7cbe8d8d084764edff2c2372ae1b9ca88012dca8b04d0bbe7ad862b']

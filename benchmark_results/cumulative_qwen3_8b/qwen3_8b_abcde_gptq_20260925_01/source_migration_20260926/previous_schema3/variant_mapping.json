@@ -1,0 +1,33 @@
+{
+  "A": {
+    "repo": "NTHUQuantization/QuaRot_Version",
+    "branch": "main",
+    "display_name": "HIP"
+  },
+  "B": {
+    "repo": "NTHUQuantization/QuaRot_Version",
+    "branch": "Hadacore",
+    "display_name": "Hadacore"
+  },
+  "C": {
+    "repo": "NTHUQuantization/QuaRot_Version",
+    "branch": "GEMM",
+    "display_name": "GEMM"
+  },
+  "D": {
+    "repo": "NTHUQuantization/QuaRot",
+    "branch": "fused_pard2",
+    "runtime": "ar",
+    "previous_label": "C",
+    "display_name": "Fusion",
+    "previous_label_schema": "original_four_variant_protocol"
+  },
+  "E": {
+    "repo": "NTHUQuantization/QuaRot",
+    "branch": "fused_pard2",
+    "runtime": "pard2-ti",
+    "previous_label": "D",
+    "display_name": "PARD2",
+    "previous_label_schema": "original_four_variant_protocol"
+  }
+}

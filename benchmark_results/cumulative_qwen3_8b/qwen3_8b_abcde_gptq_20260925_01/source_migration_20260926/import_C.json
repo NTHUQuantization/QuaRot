@@ -1,0 +1,7 @@
+{
+  "variant": "C",
+  "gpu_hidden": true,
+  "extension": "/workspace_root/benchmark_work/qwen3_8b_abcde_gptq_20260925_01/source_checkouts/C_Hadacore/quarot/_HIP.cpython-310-x86_64-linux-gnu.so",
+  "sha256": "4ffcf1408ae515ae217f2cc57f3e459de821d3d068c89efd73182cf5a84f25bb",
+  "quarot": "/workspace_root/benchmark_work/qwen3_8b_abcde_gptq_20260925_01/source_checkouts/C_Hadacore/quarot/__init__.py"
+}

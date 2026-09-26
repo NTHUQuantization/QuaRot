@@ -1,0 +1,13 @@
+{
+  "variant": "E",
+  "stage": "pilot",
+  "records": 108,
+  "load_seconds": 77.74396227579564,
+  "warmup_seconds": 15.662938056513667,
+  "measurement_wall_seconds": 93.41875821072608,
+  "total_work_seconds": 187.15132813621312,
+  "prompts": 12,
+  "cross_oracle_mismatch_prompts": 0,
+  "all_within_variant_exact": true,
+  "finished_unix": 1790341304.4560738
+}

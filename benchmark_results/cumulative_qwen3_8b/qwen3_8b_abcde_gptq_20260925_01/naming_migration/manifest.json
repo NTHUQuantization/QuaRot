@@ -1,0 +1,52 @@
+{
+  "created_unix": 1790345374.2315924,
+  "schema_before": "A=main B=GEMM C=Hadacore D=Fused E=PARD2",
+  "schema_after": "A=HIP B=Hadacore C=GEMM D=Fusion E=PARD2",
+  "variant_permutation": {
+    "A": "A",
+    "B": "C",
+    "C": "B",
+    "D": "D",
+    "E": "E"
+  },
+  "source_branches_preserved": true,
+  "old_adapter_sha256": "e660a7a3a7cbe8d8d084764edff2c2372ae1b9ca88012dca8b04d0bbe7ad862b",
+  "old_worker_sha256": "1e9c25a977a12338403266f25fa410bc8cf423b70bf077e2b87a13304a6c5902",
+  "archive_sha256": "967e1f1c49b0e02568ea46336bb8d63551246ddd59c75da98cfa6f6de3c2217d",
+  "archived_files": 210,
+  "new_adapter_sha256": "93dfa04a810528a6e5906160b8d025061b0556b84a6936e00b35e71eeee44c87",
+  "data_integrity_verified": true,
+  "current_source_mapping": {
+    "A": {
+      "repo": "NTHUQuantization/QuaRot_Version",
+      "branch": "main",
+      "display_name": "HIP"
+    },
+    "B": {
+      "repo": "NTHUQuantization/QuaRot_Version",
+      "branch": "Hadacore",
+      "display_name": "Hadacore"
+    },
+    "C": {
+      "repo": "NTHUQuantization/QuaRot_Version",
+      "branch": "GEMM",
+      "display_name": "GEMM"
+    },
+    "D": {
+      "repo": "NTHUQuantization/QuaRot",
+      "branch": "fused_pard2",
+      "runtime": "ar",
+      "previous_label": "C",
+      "display_name": "Fusion",
+      "previous_label_schema": "original_four_variant_protocol"
+    },
+    "E": {
+      "repo": "NTHUQuantization/QuaRot",
+      "branch": "fused_pard2",
+      "runtime": "pard2-ti",
+      "previous_label": "D",
+      "display_name": "PARD2",
+      "previous_label_schema": "original_four_variant_protocol"
+    }
+  }
+}

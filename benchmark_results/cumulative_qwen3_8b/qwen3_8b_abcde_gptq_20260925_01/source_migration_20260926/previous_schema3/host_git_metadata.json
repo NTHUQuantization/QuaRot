@@ -1,0 +1,32 @@
+{
+  "A": {
+    "commit": "8b3790d03d18416923627ea274bf36f6f42dde9c",
+    "branch": "main",
+    "status": "M quarot/_HIP.cpython-310-x86_64-linux-gnu.so\n?? build/",
+    "remote": "git@github.com:NTHUQuantization/QuaRot_Version.git"
+  },
+  "B": {
+    "commit": "03340c59926f6c0bdda5f6d6d357aec91e548532",
+    "branch": "Hadacore",
+    "status": "M quarot/_HIP.cpython-310-x86_64-linux-gnu.so\n?? build/",
+    "remote": "git@github.com:NTHUQuantization/QuaRot_Version.git"
+  },
+  "C": {
+    "commit": "ce73a82a2c7c4ed258dcd4e6e69ad9b2515aef52",
+    "branch": "GEMM",
+    "status": "M quarot/_HIP.cpython-310-x86_64-linux-gnu.so\n?? build/",
+    "remote": "git@github.com:NTHUQuantization/QuaRot_Version.git"
+  },
+  "D": {
+    "commit": "44e7a5dd15b69ea495461556039215fe1db2f3f6",
+    "branch": "fused_pard2",
+    "status": "M e2e/benchmark_pard2.py\n M e2e/benchmark_pard2_phases.py\n M e2e/benchmark_real_llama_runtime.py\n M e2e/pard2.py\n M e2e/score_qwen3_32b_tasks.py\n M e2e/speculative.py\n M tests/test_qwen3_32b_task_scorer.py\n?? ablation_qwen3_8b_cd_20260925_01/\n?? cumulative_cd_tests/\n?? e2e/benchmark_cumulative_cd.py\n?? e2e/checkpoint_utils/require_gptq.py\n?? qwen3_full_eval_20260925/\n?? synchronous_pard_benchmark_20260925/CONCLUSION.md\n?? synchronous_pard_benchmark_20260925/summary_completed.csv\n?? task_pilot_20260925/\n?? tests/test_ti_fallback.py\n?? ti_slowdown_20260925/",
+    "remote": "https://github.com/NTHUQuantization/QuaRot.git"
+  },
+  "E": {
+    "commit": "44e7a5dd15b69ea495461556039215fe1db2f3f6",
+    "branch": "fused_pard2",
+    "status": "M e2e/benchmark_pard2.py\n M e2e/benchmark_pard2_phases.py\n M e2e/benchmark_real_llama_runtime.py\n M e2e/pard2.py\n M e2e/score_qwen3_32b_tasks.py\n M e2e/speculative.py\n M tests/test_qwen3_32b_task_scorer.py\n?? ablation_qwen3_8b_cd_20260925_01/\n?? cumulative_cd_tests/\n?? e2e/benchmark_cumulative_cd.py\n?? e2e/checkpoint_utils/require_gptq.py\n?? qwen3_full_eval_20260925/\n?? synchronous_pard_benchmark_20260925/CONCLUSION.md\n?? synchronous_pard_benchmark_20260925/summary_completed.csv\n?? task_pilot_20260925/\n?? tests/test_ti_fallback.py\n?? ti_slowdown_20260925/",
+    "remote": "https://github.com/NTHUQuantization/QuaRot.git"
+  }
+}

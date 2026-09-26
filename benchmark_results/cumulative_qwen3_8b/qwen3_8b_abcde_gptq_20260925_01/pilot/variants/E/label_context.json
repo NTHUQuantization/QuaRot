@@ -1,0 +1,9 @@
+{
+  "effective_label_schema_version": 4,
+  "variant": "E",
+  "display_name": "PARD2",
+  "source_commit": "44e7a5dd15b69ea495461556039215fe1db2f3f6",
+  "source_preserved": true,
+  "original_manifest_label_schema_version": 3,
+  "note": "This source and data are retained across B/C replacement; see source_migration_20260926. Original raw/manifest bytes preserved."
+}

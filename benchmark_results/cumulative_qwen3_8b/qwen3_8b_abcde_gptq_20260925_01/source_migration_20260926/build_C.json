@@ -1,0 +1,33 @@
+{
+  "variant": "C",
+  "commit": "6c30374901038138ac5094e6eaed35a5ca35db2f",
+  "command": [
+    "docker",
+    "exec",
+    "-e",
+    "MAX_JOBS=1",
+    "-e",
+    "HIP_VISIBLE_DEVICES=-1",
+    "-e",
+    "ROCR_VISIBLE_DEVICES=-1",
+    "-e",
+    "CUDA_VISIBLE_DEVICES=-1",
+    "-e",
+    "PYTHONDONTWRITEBYTECODE=1",
+    "-w",
+    "/workspace_root/benchmark_work/qwen3_8b_abcde_gptq_20260925_01/source_checkouts/C_Hadacore",
+    "qwen3_32b_quarot_clean",
+    "nice",
+    "-n",
+    "19",
+    "python",
+    "setup.py",
+    "build_ext",
+    "--inplace",
+    "--force"
+  ],
+  "started_unix": 1790354993.1222296,
+  "finished_unix": 1790355070.4308293,
+  "extension_sha256": "4ffcf1408ae515ae217f2cc57f3e459de821d3d068c89efd73182cf5a84f25bb",
+  "status": "built"
+}

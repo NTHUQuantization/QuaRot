@@ -1,0 +1,33 @@
+{
+  "created_unix": 1790354912.727315,
+  "schema_before": 3,
+  "schema_after": 4,
+  "change_type": "new source commits plus B/C reassignment",
+  "old_worker_sha256": "1e9c25a977a12338403266f25fa410bc8cf423b70bf077e2b87a13304a6c5902",
+  "adapter_before_sha256": "93dfa04a810528a6e5906160b8d025061b0556b84a6936e00b35e71eeee44c87",
+  "archive_sha256": "8767e720ccb99ddfb6e866f3d9fb3673712a52717b4976ccbbcc53d7d663314d",
+  "preserved_variants": [
+    "A",
+    "D",
+    "E"
+  ],
+  "retest_variants": [
+    "B",
+    "C"
+  ],
+  "new_sources": {
+    "B": {
+      "display_name": "GEMM",
+      "branch": "GEMM",
+      "commit": "973a13dd849cbf2cee1e134919356ce71e23cdb5",
+      "relative_checkout": "source_checkouts/B_GEMM"
+    },
+    "C": {
+      "display_name": "Hadacore",
+      "branch": "Hadacore",
+      "commit": "6c30374901038138ac5094e6eaed35a5ca35db2f",
+      "relative_checkout": "source_checkouts/C_Hadacore"
+    }
+  },
+  "adapter_after_sha256": "6a1e5cb6c54343668ee5cd6811a5020e91210b333766ff378e7461b7b7195f2b"
+}

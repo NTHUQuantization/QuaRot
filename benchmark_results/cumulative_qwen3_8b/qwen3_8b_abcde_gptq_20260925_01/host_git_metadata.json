@@ -1,0 +1,36 @@
+{
+  "A": {
+    "commit": "8b3790d03d18416923627ea274bf36f6f42dde9c",
+    "branch": "main",
+    "status": "M quarot/_HIP.cpython-310-x86_64-linux-gnu.so\n?? build/",
+    "remote": "git@github.com:NTHUQuantization/QuaRot_Version.git"
+  },
+  "B": {
+    "commit": "973a13dd849cbf2cee1e134919356ce71e23cdb5",
+    "branch": "GEMM",
+    "status": "M quarot/_HIP.cpython-310-x86_64-linux-gnu.so\n?? build/",
+    "remote": "git@github.com:NTHUQuantization/QuaRot_Version.git",
+    "display_name": "GEMM",
+    "label_schema_version": 4
+  },
+  "C": {
+    "commit": "6c30374901038138ac5094e6eaed35a5ca35db2f",
+    "branch": "Hadacore",
+    "status": "M build/lib.linux-x86_64-cpython-310/quarot/_HIP.cpython-310-x86_64-linux-gnu.so\n M build/temp.linux-x86_64-cpython-310/.ninja_deps\n M build/temp.linux-x86_64-cpython-310/.ninja_log\n M build/temp.linux-x86_64-cpython-310/build.ninja\n M build/temp.linux-x86_64-cpython-310/quarot/kernels/bindings.o\n M build/temp.linux-x86_64-cpython-310/quarot/kernels/flashinfer.o\n M build/temp.linux-x86_64-cpython-310/quarot/kernels/gemm.o\n M build/temp.linux-x86_64-cpython-310/quarot/kernels/hadamard.o\n M build/temp.linux-x86_64-cpython-310/quarot/kernels/quant_hip.o\n M quarot/_HIP.cpython-310-x86_64-linux-gnu.so",
+    "remote": "git@github.com:NTHUQuantization/QuaRot_Version.git",
+    "display_name": "Hadacore",
+    "label_schema_version": 4
+  },
+  "D": {
+    "commit": "44e7a5dd15b69ea495461556039215fe1db2f3f6",
+    "branch": "fused_pard2",
+    "status": "M e2e/benchmark_pard2.py\n M e2e/benchmark_pard2_phases.py\n M e2e/benchmark_real_llama_runtime.py\n M e2e/pard2.py\n M e2e/score_qwen3_32b_tasks.py\n M e2e/speculative.py\n M tests/test_qwen3_32b_task_scorer.py\n?? ablation_qwen3_8b_cd_20260925_01/\n?? cumulative_cd_tests/\n?? e2e/benchmark_cumulative_cd.py\n?? e2e/checkpoint_utils/require_gptq.py\n?? qwen3_full_eval_20260925/\n?? synchronous_pard_benchmark_20260925/CONCLUSION.md\n?? synchronous_pard_benchmark_20260925/summary_completed.csv\n?? task_pilot_20260925/\n?? tests/test_ti_fallback.py\n?? ti_slowdown_20260925/",
+    "remote": "https://github.com/NTHUQuantization/QuaRot.git"
+  },
+  "E": {
+    "commit": "44e7a5dd15b69ea495461556039215fe1db2f3f6",
+    "branch": "fused_pard2",
+    "status": "M e2e/benchmark_pard2.py\n M e2e/benchmark_pard2_phases.py\n M e2e/benchmark_real_llama_runtime.py\n M e2e/pard2.py\n M e2e/score_qwen3_32b_tasks.py\n M e2e/speculative.py\n M tests/test_qwen3_32b_task_scorer.py\n?? ablation_qwen3_8b_cd_20260925_01/\n?? cumulative_cd_tests/\n?? e2e/benchmark_cumulative_cd.py\n?? e2e/checkpoint_utils/require_gptq.py\n?? qwen3_full_eval_20260925/\n?? synchronous_pard_benchmark_20260925/CONCLUSION.md\n?? synchronous_pard_benchmark_20260925/summary_completed.csv\n?? task_pilot_20260925/\n?? tests/test_ti_fallback.py\n?? ti_slowdown_20260925/",
+    "remote": "https://github.com/NTHUQuantization/QuaRot.git"
+  }
+}

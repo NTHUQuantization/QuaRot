@@ -1,0 +1,33 @@
+{
+  "variant": "B",
+  "commit": "973a13dd849cbf2cee1e134919356ce71e23cdb5",
+  "command": [
+    "docker",
+    "exec",
+    "-e",
+    "MAX_JOBS=1",
+    "-e",
+    "HIP_VISIBLE_DEVICES=-1",
+    "-e",
+    "ROCR_VISIBLE_DEVICES=-1",
+    "-e",
+    "CUDA_VISIBLE_DEVICES=-1",
+    "-e",
+    "PYTHONDONTWRITEBYTECODE=1",
+    "-w",
+    "/workspace_root/benchmark_work/qwen3_8b_abcde_gptq_20260925_01/source_checkouts/B_GEMM",
+    "qwen3_32b_quarot_clean",
+    "nice",
+    "-n",
+    "19",
+    "python",
+    "setup.py",
+    "build_ext",
+    "--inplace",
+    "--force"
+  ],
+  "started_unix": 1790354916.6475372,
+  "finished_unix": 1790354993.0780425,
+  "extension_sha256": "a5fb456eca9999e42dffab6cec8a10e95deac0b9664aa5039e1f15b29a097199",
+  "status": "built"
+}

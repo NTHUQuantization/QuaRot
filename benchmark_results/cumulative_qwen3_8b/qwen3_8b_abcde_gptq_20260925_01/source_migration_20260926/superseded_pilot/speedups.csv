@@ -1,0 +1,29 @@
+left,left_name,right,right_name,dataset,paired_geomean_e2e_time_ratio,bootstrap_ci95_low,bootstrap_ci95_high,identical_output_prompts,prompts,interpretation
+A,HIP,B,Hadacore,humaneval,1.0031659378601065,1.0028061675157351,1.0034322308051886,2,4,natural-generation time ratio; output workloads differ
+A,HIP,B,Hadacore,gsm8k,1.0030620552047442,1.0023940230363455,1.0037305325742991,1,4,natural-generation time ratio; output workloads differ
+A,HIP,B,Hadacore,math_500,1.0027496042833737,1.0023725051110244,1.003126845322928,2,4,natural-generation time ratio; output workloads differ
+A,HIP,B,Hadacore,dataset_equal_overall,1.0029925168423153,1.0027141034698512,1.0032714327638166,5,12,natural-generation time ratio; output workloads differ
+A,HIP,C,GEMM,humaneval,1.8886628304366566,1.817762072889514,1.966779966477694,0,4,natural-generation time ratio; output workloads differ
+A,HIP,C,GEMM,gsm8k,1.8051892346681002,1.7772412011148258,1.8234319830920567,0,4,natural-generation time ratio; output workloads differ
+A,HIP,C,GEMM,math_500,1.8134114593113957,1.7901105875507435,1.8502294298429158,0,4,natural-generation time ratio; output workloads differ
+A,HIP,C,GEMM,dataset_equal_overall,1.835373716181715,1.8104729190671371,1.8640252650074494,0,12,natural-generation time ratio; output workloads differ
+A,HIP,D,Fusion,humaneval,6.929794820244806,6.477506305350841,7.364616718077584,0,4,natural-generation time ratio; output workloads differ
+A,HIP,D,Fusion,gsm8k,6.800866729873129,6.742557393759243,6.859680322529376,0,4,natural-generation time ratio; output workloads differ
+A,HIP,D,Fusion,math_500,6.782511718539238,6.689135521909129,6.903750064296605,0,4,natural-generation time ratio; output workloads differ
+A,HIP,D,Fusion,dataset_equal_overall,6.8374117049618555,6.677194751538323,6.989657805303635,0,12,natural-generation time ratio; output workloads differ
+A,HIP,E,PARD2,humaneval,13.493565448877115,10.780194879842997,16.635487374693113,0,4,natural-generation time ratio; output workloads differ
+A,HIP,E,PARD2,gsm8k,13.450880497034204,11.616711465848804,15.494622838016733,0,4,natural-generation time ratio; output workloads differ
+A,HIP,E,PARD2,math_500,16.639110999218904,14.002760727223732,19.754954856843916,0,4,natural-generation time ratio; output workloads differ
+A,HIP,E,PARD2,dataset_equal_overall,14.45448150268641,12.936548802806673,16.055025643857316,0,12,natural-generation time ratio; output workloads differ
+B,Hadacore,C,GEMM,humaneval,1.8827023119080768,1.812675402059682,1.9601535276559199,0,4,natural-generation time ratio; output workloads differ
+B,Hadacore,C,GEMM,gsm8k,1.799678519690017,1.770679756524364,1.818954961327749,0,4,natural-generation time ratio; output workloads differ
+B,Hadacore,C,GEMM,math_500,1.8084389677793695,1.7857530894704907,1.8443963210625496,0,4,natural-generation time ratio; output workloads differ
+B,Hadacore,C,GEMM,dataset_equal_overall,1.8298977164455372,1.8050508765131708,1.8585425090755683,0,12,natural-generation time ratio; output workloads differ
+C,GEMM,D,Fusion,humaneval,3.6691540218656424,3.4653276590086968,3.8000027726466343,0,4,natural-generation time ratio; output workloads differ
+C,GEMM,D,Fusion,gsm8k,3.7673982313125904,3.7299521175229753,3.7997735621691975,0,4,natural-generation time ratio; output workloads differ
+C,GEMM,D,Fusion,math_500,3.740194583922368,3.7278241058412154,3.759988107994023,0,4,natural-generation time ratio; output workloads differ
+C,GEMM,D,Fusion,dataset_equal_overall,3.725351215765642,3.655014428543701,3.7744233370795324,0,12,natural-generation time ratio; output workloads differ
+D,Fusion,E,PARD2,humaneval,1.9471810924988442,1.4519864386664874,2.4818689858859146,4,4,equal-output speedup
+D,Fusion,E,PARD2,gsm8k,1.9778185680290685,1.7128702267492264,2.29166343314039,4,4,equal-output speedup
+D,Fusion,E,PARD2,math_500,2.4532373388663307,2.0742810176626496,2.9014262723136746,4,4,equal-output speedup
+D,Fusion,E,PARD2,dataset_equal_overall,2.1140282502217773,1.8711457159091194,2.3606439468311233,12,12,equal-output speedup

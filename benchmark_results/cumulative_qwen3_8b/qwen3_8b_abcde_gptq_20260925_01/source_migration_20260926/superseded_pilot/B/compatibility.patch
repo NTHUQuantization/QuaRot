@@ -1,0 +1,21 @@
+--- a/e2e/quantized_common.py
++++ b/e2e/quantized_common.py
+@@ -83,6 +83,9 @@
+                 attention_mask=None, past_key_value=None,
+                 cache_position=None, output_attentions=False,
+                 position_ids=None, **kwargs):
++        plural_cache = kwargs.pop("past_key_values", None)
++        if past_key_value is None:
++            past_key_value = plural_cache
+         output_attentions = False
+         if isinstance(hidden_states, quarot.PackedQuantizedTensor):
+             bsz, q_len = hidden_states.quantized_x.shape[:2]
+@@ -188,6 +191,8 @@
+             self.gate_proj = quarot.nn.Linear4bit.from_float(gate)
+             self.down_proj_hadamard = quarot.nn.OnlineHadamard(
+                 self.intermediate_size)
++            if self.down_proj_hadamard.had_rem_dim is not None:
++                self.down_proj_hadamard._non_persistent_buffers_set.discard("had_rem_dim")
+             self.down_proj_quantizer = quarot.nn.Quantizer(input_clip)
+             self.down_proj = quarot.nn.Linear4bit.from_float(down)
+         else:

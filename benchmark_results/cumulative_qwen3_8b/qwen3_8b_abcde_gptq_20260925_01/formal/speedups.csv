@@ -1,0 +1,29 @@
+left,left_name,right,right_name,dataset,paired_geomean_e2e_time_ratio,bootstrap_ci95_low,bootstrap_ci95_high,identical_output_prompts,prompts,interpretation
+A,HIP,B,GEMM,humaneval,1.7645493607509772,1.7025747268131326,1.8113558227717865,0,32,natural-generation time ratio; output workloads differ
+A,HIP,B,GEMM,gsm8k,1.7521050764306016,1.6490803189774892,1.8701387343835543,0,32,natural-generation time ratio; output workloads differ
+A,HIP,B,GEMM,math_500,1.709138390636235,1.6683562938102303,1.7395646178298398,0,32,natural-generation time ratio; output workloads differ
+A,HIP,B,GEMM,dataset_equal_overall,1.741768356729632,1.6982384202940919,1.7868268227239288,0,96,natural-generation time ratio; output workloads differ
+A,HIP,C,Hadacore,humaneval,1.8152467559724177,1.7417513744461282,1.8850478128866686,0,32,natural-generation time ratio; output workloads differ
+A,HIP,C,Hadacore,gsm8k,1.828051638159681,1.709151514155495,1.9548767160853082,0,32,natural-generation time ratio; output workloads differ
+A,HIP,C,Hadacore,math_500,1.7346035802799742,1.6919143165977757,1.767066358136081,0,32,natural-generation time ratio; output workloads differ
+A,HIP,C,Hadacore,dataset_equal_overall,1.7921517845895043,1.7428126171754628,1.8414884631948758,0,96,natural-generation time ratio; output workloads differ
+A,HIP,D,Fusion,humaneval,6.780220714618715,6.57574284048566,6.959231583732961,0,32,natural-generation time ratio; output workloads differ
+A,HIP,D,Fusion,gsm8k,6.721779998750003,6.454639308410761,6.994691545839995,0,32,natural-generation time ratio; output workloads differ
+A,HIP,D,Fusion,math_500,6.595236528824479,6.329072037809107,6.781354274440681,0,32,natural-generation time ratio; output workloads differ
+A,HIP,D,Fusion,dataset_equal_overall,6.69863272901161,6.558450557692067,6.833041169147144,0,96,natural-generation time ratio; output workloads differ
+A,HIP,E,PARD2,humaneval,16.55579941954039,14.809488784244618,18.43260845651873,0,32,natural-generation time ratio; output workloads differ
+A,HIP,E,PARD2,gsm8k,14.692966045465873,13.573718066201975,15.86919650386625,0,32,natural-generation time ratio; output workloads differ
+A,HIP,E,PARD2,math_500,15.720140676114305,14.372806828738938,17.152732629747998,0,32,natural-generation time ratio; output workloads differ
+A,HIP,E,PARD2,dataset_equal_overall,15.637669125390957,14.77636175741526,16.479138424085416,0,96,natural-generation time ratio; output workloads differ
+B,GEMM,C,Hadacore,humaneval,1.0287310722777763,1.0156156517940689,1.0508057464643785,3,32,natural-generation time ratio; output workloads differ
+B,GEMM,C,Hadacore,gsm8k,1.0433458944618768,1.0033320459867343,1.0953315891741584,9,32,natural-generation time ratio; output workloads differ
+B,GEMM,C,Hadacore,math_500,1.0148994310719681,1.0008190406225492,1.0232524926930118,5,32,natural-generation time ratio; output workloads differ
+B,GEMM,C,Hadacore,dataset_equal_overall,1.0289265950120217,1.0142645003619262,1.0467308366532586,17,96,natural-generation time ratio; output workloads differ
+C,Hadacore,D,Fusion,humaneval,3.7351509883220197,3.6711827708362343,3.7885230858937775,0,32,natural-generation time ratio; output workloads differ
+C,Hadacore,D,Fusion,gsm8k,3.677018667545349,3.506004561433171,3.854758469415708,0,32,natural-generation time ratio; output workloads differ
+C,Hadacore,D,Fusion,math_500,3.802157797783384,3.6946745554669334,3.9253167046137185,0,32,natural-generation time ratio; output workloads differ
+C,Hadacore,D,Fusion,dataset_equal_overall,3.7377597068576107,3.665654324709584,3.8120436226322516,0,96,natural-generation time ratio; output workloads differ
+D,Fusion,E,PARD2,humaneval,2.4417788323387057,2.2125091064334907,2.688414399836575,32,32,equal-output speedup
+D,Fusion,E,PARD2,gsm8k,2.185874284519608,2.0330420994784797,2.346939737045358,32,32,equal-output speedup
+D,Fusion,E,PARD2,math_500,2.383559802201094,2.1896004461742287,2.590324208295966,32,32,equal-output speedup
+D,Fusion,E,PARD2,dataset_equal_overall,2.3344568597804454,2.21989834052497,2.4470213358660473,96,96,equal-output speedup

@@ -1,0 +1,13 @@
+{
+  "variant": "E",
+  "stage": "formal",
+  "records": 864,
+  "load_seconds": 51.376727452501655,
+  "warmup_seconds": 26.352295016869903,
+  "measurement_wall_seconds": 1197.082312089391,
+  "total_work_seconds": 1276.8179372651502,
+  "prompts": 96,
+  "cross_oracle_mismatch_prompts": 0,
+  "all_within_variant_exact": true,
+  "finished_unix": 1790384352.2804933
+}

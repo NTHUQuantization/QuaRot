@@ -1,0 +1,29 @@
+{
+  "verified_unix": 1790345720.5153596,
+  "valid": true,
+  "comparisons": [
+    {
+      "old_file": "cumulative_ablation_abcde_20260925/results/pilot/B/runs.jsonl",
+      "new_file": "cumulative_ablation_abcde_20260925/results/pilot/C/runs.jsonl",
+      "records": 108,
+      "measurement_payload_unchanged": true,
+      "source_branch": "GEMM"
+    },
+    {
+      "old_file": "benchmark_work/qwen3_8b_abcde_gptq_20260925_01/results/pilot/B/runs.jsonl",
+      "new_file": "benchmark_work/qwen3_8b_abcde_gptq_20260925_01/results/pilot/C/runs.jsonl",
+      "records": 108,
+      "measurement_payload_unchanged": true,
+      "source_branch": "GEMM"
+    },
+    {
+      "old_file": "benchmark_work/qwen3_8b_abcde_gptq_20260925_01/results/pilot/C/runs.jsonl",
+      "new_file": "benchmark_work/qwen3_8b_abcde_gptq_20260925_01/results/pilot/B/runs.jsonl",
+      "records": 108,
+      "measurement_payload_unchanged": true,
+      "source_branch": "Hadacore"
+    }
+  ],
+  "timed_worker_unchanged": true,
+  "branch_assignment_only_adapter_change": true
+}
